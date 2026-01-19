@@ -104,6 +104,23 @@ function App() {
       }
   };
 
+  const handleDeleteUser = (username: string) => {
+      // 1. Remove from list
+      const updatedUsers = allUsers.filter(u => u.companyName !== username);
+      setAllUsers(updatedUsers);
+      localStorage.setItem('opc_users', JSON.stringify(updatedUsers));
+
+      // 2. Cleanup associated data (Projects, Supervisor Chats)
+      // Note: Friendship connections in 'opc_connections' might remain as 'ghosts' or can be cleaned up lazily
+      localStorage.removeItem(`opc_projects_${username}`);
+      localStorage.removeItem(`opc_instructions_${username}`);
+      
+      // Clear session if we deleted the current user (unlikely as supervisor does this, but good safety)
+      if (currentUser?.companyName === username) {
+          handleLogout();
+      }
+  };
+
   const handleLogout = () => {
     setIsSupervisor(false);
     setCurrentUser(null); // Clear current user session in memory
@@ -152,6 +169,7 @@ function App() {
           isSupervisor={isSupervisor}
           allUsers={allUsers}
           onUpdateProfile={handleUpdateProfile}
+          onDeleteUser={handleDeleteUser}
         />
       )}
     </div>

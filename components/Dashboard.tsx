@@ -15,6 +15,7 @@ interface DashboardProps {
   isSupervisor?: boolean;
   allUsers?: UserProfile[]; // passed from App
   onUpdateProfile?: (p: UserProfile) => void; // passed from App
+  onDeleteUser?: (username: string) => void; // passed from App for Supervisor
 }
 
 interface MessageItem {
@@ -97,7 +98,7 @@ const calculateTimeSpent = (entries: DiaryEntry[]) => {
   return `${diffDays}d`;
 };
 
-export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, lang, role, onReset, isSupervisor = false, allUsers = [], onUpdateProfile }) => {
+export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, lang, role, onReset, isSupervisor = false, allUsers = [], onUpdateProfile, onDeleteUser }) => {
   const t = TRANSLATIONS[lang];
   const isOwner = role === 'owner' && !isSupervisor;
   
@@ -117,6 +118,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, l
   const [isDiaryExpanded, setIsDiaryExpanded] = useState(false);
   const [commentInputs, setCommentInputs] = useState<{[key: string]: string}>({});
   const [expandedComments, setExpandedComments] = useState<Record<string, boolean>>({});
+
+  // Diary Editing State
+  const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
+  const [editingContent, setEditingContent] = useState('');
 
   // UI States
   const [isEditingProfile, setIsEditingProfile] = useState(false);
@@ -611,6 +616,46 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, l
   const toggleCommentExpansion = (entryId: string) => {
     setExpandedComments(prev => ({ ...prev, [entryId]: !prev[entryId] }));
   };
+
+  // DIARY ENTRY EDIT & DELETE HANDLERS
+  const startEditingEntry = (entry: DiaryEntry) => {
+      setEditingEntryId(entry.id);
+      setEditingContent(entry.content);
+  };
+
+  const cancelEditingEntry = () => {
+      setEditingEntryId(null);
+      setEditingContent('');
+  };
+
+  const saveEditingEntry = (entryId: string) => {
+      if (!activeProject) return;
+      const updatedEntries = activeProject.entries.map(e => {
+          if (e.id === entryId) {
+              return { ...e, content: editingContent };
+          }
+          return e;
+      });
+      const updatedProject = { ...activeProject, entries: updatedEntries };
+      setActiveProject(updatedProject);
+      const updatedProjects = projects.map(p => p.id === updatedProject.id ? updatedProject : p);
+      saveProjectsToStorage(updatedProjects);
+      setEditingEntryId(null);
+      setEditingContent('');
+      showToast('Log Updated');
+  };
+
+  const handleDeleteEntry = (entryId: string) => {
+      if (!window.confirm("Delete this diary entry? This cannot be undone.")) return;
+      if (!activeProject) return;
+      
+      const updatedEntries = activeProject.entries.filter(e => e.id !== entryId);
+      const updatedProject = { ...activeProject, entries: updatedEntries };
+      setActiveProject(updatedProject);
+      const updatedProjects = projects.map(p => p.id === updatedProject.id ? updatedProject : p);
+      saveProjectsToStorage(updatedProjects);
+      showToast('Log Deleted');
+  };
   
   const handleFollowUser = (e: React.MouseEvent, name: string) => {
       e.stopPropagation();
@@ -720,12 +765,26 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, l
                                     <p className="text-stone-500 text-[9px] font-mono uppercase tracking-widest">Active</p>
                                 </div>
                             </div>
-                            <button 
-                                onClick={(e) => { e.stopPropagation(); openSupervisorChat(user); }}
-                                className="w-full bg-stone-900 hover:bg-rose-600 text-white text-[9px] py-2 rounded-lg font-bold uppercase tracking-wider flex items-center justify-center gap-2 border border-stone-700 hover:border-rose-500 transition-all"
-                            >
-                                <Zap size={10} /> Direct Line
-                            </button>
+                            <div className="w-full flex gap-2 mt-auto">
+                                <button 
+                                    onClick={(e) => { e.stopPropagation(); openSupervisorChat(user); }}
+                                    className="flex-1 bg-stone-900 hover:bg-rose-600 text-white text-[9px] py-2 rounded-lg font-bold uppercase tracking-wider flex items-center justify-center gap-2 border border-stone-700 hover:border-rose-500 transition-all"
+                                >
+                                    <Zap size={10} /> Chat
+                                </button>
+                                <button 
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (window.confirm(`Are you sure you want to permanently delete user "${user.companyName}"? This action cannot be undone.`)) {
+                                            onDeleteUser?.(user.companyName);
+                                        }
+                                    }}
+                                    className="bg-rose-950/50 hover:bg-rose-600 text-rose-500 hover:text-white p-2 rounded-lg transition-colors border border-rose-900/50 hover:border-rose-500"
+                                    title="Delete User"
+                                >
+                                    <Trash2 size={12} />
+                                </button>
+                            </div>
                         </div>
                     ))}
                 </div>
@@ -815,16 +874,30 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, l
                                          {user.avatar ? <img src={user.avatar} className="w-8 h-8 rounded-full" /> : <div className="w-8 h-8 bg-stone-600 rounded-full"/>}
                                          <span className="text-white font-bold text-sm">{user.companyName}</span>
                                      </div>
-                                     {followedUsers.includes(user.companyName) ? (
-                                         <span className="text-stone-500 text-xs font-mono">Tracking</span>
-                                     ) : (
-                                         <button 
-                                            onClick={(e) => handleFollowUser(e, user.companyName)}
-                                            className="bg-white text-stone-900 px-3 py-1 rounded-lg text-xs font-bold uppercase"
-                                         >
-                                             Track
-                                         </button>
-                                     )}
+                                     <div className="flex items-center gap-2">
+                                         {followedUsers.includes(user.companyName) ? (
+                                             <span className="text-stone-500 text-xs font-mono mr-2">Tracking</span>
+                                         ) : (
+                                             <button 
+                                                onClick={(e) => handleFollowUser(e, user.companyName)}
+                                                className="bg-white text-stone-900 px-3 py-1 rounded-lg text-xs font-bold uppercase"
+                                             >
+                                                 Track
+                                             </button>
+                                         )}
+                                          <button 
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                if (window.confirm(`Are you sure you want to permanently delete user "${user.companyName}"? This action cannot be undone.`)) {
+                                                    onDeleteUser?.(user.companyName);
+                                                }
+                                            }}
+                                            className="bg-rose-950/30 text-rose-500 hover:bg-rose-600 hover:text-white p-1.5 rounded-lg transition-colors"
+                                            title="Delete User"
+                                        >
+                                            <Trash2 size={14} />
+                                        </button>
+                                     </div>
                                  </div>
                              ))}
                              {supervisorSearchResults.length === 0 && <p className="text-stone-600 text-center text-xs">No users found in database</p>}
@@ -1133,16 +1206,56 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, l
                                 <>
                                     {visibleEntries.map((entry) => {
                                         const visibleComments = expandedComments[entry.id] ? entry.comments : entry.comments.slice(0, 2);
+                                        const isEditingEntry = editingEntryId === entry.id;
+
                                         return (
                                             <div key={entry.id} className="flex gap-4 group/entry w-full">
                                                 <div className="w-16 text-right pt-2 shrink-0"><span className="block text-xs font-black text-stone-800">{entry.date}</span><span className="block text-[10px] font-mono text-stone-400 mt-1">{new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></div>
-                                                <div className="flex-1 bg-stone-50 rounded-xl p-4 border border-stone-100 hover:border-stone-200 hover:bg-white hover:shadow-md transition-all relative">
-                                                    <p className="text-sm text-stone-700 font-medium leading-relaxed whitespace-pre-wrap break-words">{entry.content}</p>
-                                                    {entry.images && entry.images.length > 0 && <div className="mt-3 flex justify-start"><div className="w-10 h-10 rounded-lg overflow-hidden border border-stone-200 cursor-zoom-in hover:scale-105 transition-transform relative group/img shadow-sm" onClick={() => setImagePreview(entry.images[0])}><img src={entry.images[0]} className="w-full h-full object-cover" /><div className="absolute inset-0 bg-black/10 group-hover/img:bg-transparent transition-colors" /></div></div>}
-                                                    <div className="mt-4 pt-3 border-t border-stone-100">
-                                                        {entry.comments.length > 0 && <div className="space-y-1 mb-2">{visibleComments.map(c => <div key={c.id} className="flex gap-2"><img src={c.avatar} className="w-4 h-4 rounded-full" /><div className="bg-white px-2 py-0.5 rounded-r-md rounded-bl-md border border-stone-100 text-[10px] text-stone-600 break-words flex-1">{c.content}</div></div>)}{entry.comments.length > 2 && <button onClick={() => toggleCommentExpansion(entry.id)} className="text-[9px] font-bold text-stone-400 hover:text-stone-800 ml-6 flex items-center gap-1 mt-1">{expandedComments[entry.id] ? "Collapse" : `View ${entry.comments.length - 2} more`}</button>}</div>}
-                                                        <div className="flex items-center gap-2"><div className="w-4 h-4 rounded-full bg-stone-200 shrink-0 overflow-hidden">{profile.avatar && <img src={profile.avatar} className="w-full h-full object-cover" />}</div><div className="flex-1 relative"><input value={commentInputs[entry.id] || ''} onChange={(e) => setCommentInputs({...commentInputs, [entry.id]: e.target.value})} placeholder={t.commentPlaceholder} className="w-full bg-transparent text-[10px] border-b border-stone-200 focus:border-stone-400 outline-none py-1 placeholder:text-stone-300" onKeyDown={(e) => e.key === 'Enter' && handlePostComment(entry.id)} /><button onClick={() => handlePostComment(entry.id)} disabled={!commentInputs[entry.id]} className="absolute right-0 top-1/2 -translate-y-1/2 text-stone-300 hover:text-blue-500 disabled:opacity-0 transition-all"><Send size={10} /></button></div></div>
-                                                    </div>
+                                                <div className="flex-1 bg-stone-50 rounded-xl p-4 border border-stone-100 hover:border-stone-200 hover:bg-white hover:shadow-md transition-all relative group/card">
+                                                    
+                                                    {/* RESTORED ENTRY CONTROLS */}
+                                                    {canEdit && !isEditingEntry && (
+                                                        <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover/card:opacity-100 transition-opacity z-10">
+                                                            <button 
+                                                                onClick={() => startEditingEntry(entry)} 
+                                                                className="p-1.5 rounded-lg bg-white border border-stone-100 text-stone-400 hover:text-blue-500 hover:border-blue-200 shadow-sm"
+                                                                title="Edit"
+                                                            >
+                                                                <Edit2 size={12} />
+                                                            </button>
+                                                            <button 
+                                                                onClick={() => handleDeleteEntry(entry.id)} 
+                                                                className="p-1.5 rounded-lg bg-white border border-stone-100 text-stone-400 hover:text-rose-500 hover:border-rose-200 shadow-sm"
+                                                                title="Delete"
+                                                            >
+                                                                <Trash2 size={12} />
+                                                            </button>
+                                                        </div>
+                                                    )}
+
+                                                    {isEditingEntry ? (
+                                                        <div className="animate-in fade-in">
+                                                            <textarea 
+                                                                value={editingContent}
+                                                                onChange={(e) => setEditingContent(e.target.value)}
+                                                                className="w-full bg-white p-3 rounded-lg border border-blue-200 outline-none text-sm text-stone-700 min-h-[100px] mb-2 focus:ring-2 ring-blue-50"
+                                                                autoFocus
+                                                            />
+                                                            <div className="flex justify-end gap-2">
+                                                                <button onClick={cancelEditingEntry} className="text-[10px] font-bold text-stone-400 hover:text-stone-600 px-3 py-1">Cancel</button>
+                                                                <button onClick={() => saveEditingEntry(entry.id)} className="bg-stone-900 text-white px-3 py-1.5 rounded-lg text-[10px] font-bold flex items-center gap-1 hover:bg-black"><Save size={10} /> Update Log</button>
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <>
+                                                            <p className="text-sm text-stone-700 font-medium leading-relaxed whitespace-pre-wrap break-words">{entry.content}</p>
+                                                            {entry.images && entry.images.length > 0 && <div className="mt-3 flex justify-start"><div className="w-10 h-10 rounded-lg overflow-hidden border border-stone-200 cursor-zoom-in hover:scale-105 transition-transform relative group/img shadow-sm" onClick={() => setImagePreview(entry.images[0])}><img src={entry.images[0]} className="w-full h-full object-cover" /><div className="absolute inset-0 bg-black/10 group-hover/img:bg-transparent transition-colors" /></div></div>}
+                                                            <div className="mt-4 pt-3 border-t border-stone-100">
+                                                                {entry.comments.length > 0 && <div className="space-y-1 mb-2">{visibleComments.map(c => <div key={c.id} className="flex gap-2"><img src={c.avatar} className="w-4 h-4 rounded-full" /><div className="bg-white px-2 py-0.5 rounded-r-md rounded-bl-md border border-stone-100 text-[10px] text-stone-600 break-words flex-1">{c.content}</div></div>)}{entry.comments.length > 2 && <button onClick={() => toggleCommentExpansion(entry.id)} className="text-[9px] font-bold text-stone-400 hover:text-stone-800 ml-6 flex items-center gap-1 mt-1">{expandedComments[entry.id] ? "Collapse" : `View ${entry.comments.length - 2} more`}</button>}</div>}
+                                                                <div className="flex items-center gap-2"><div className="w-4 h-4 rounded-full bg-stone-200 shrink-0 overflow-hidden">{profile.avatar && <img src={profile.avatar} className="w-full h-full object-cover" />}</div><div className="flex-1 relative"><input value={commentInputs[entry.id] || ''} onChange={(e) => setCommentInputs({...commentInputs, [entry.id]: e.target.value})} placeholder={t.commentPlaceholder} className="w-full bg-transparent text-[10px] border-b border-stone-200 focus:border-stone-400 outline-none py-1 placeholder:text-stone-300" onKeyDown={(e) => e.key === 'Enter' && handlePostComment(entry.id)} /><button onClick={() => handlePostComment(entry.id)} disabled={!commentInputs[entry.id]} className="absolute right-0 top-1/2 -translate-y-1/2 text-stone-300 hover:text-blue-500 disabled:opacity-0 transition-all"><Send size={10} /></button></div></div>
+                                                            </div>
+                                                        </>
+                                                    )}
                                                 </div>
                                             </div>
                                         );

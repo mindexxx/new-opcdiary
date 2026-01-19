@@ -91,6 +91,7 @@ export interface ForumPost {
   content: string;
   image?: string | null; // Added image
   link?: string | null; // Added link
+  category?: string; // Added category
   timestamp: number;
   likes: number;
   likedBy?: string[]; // Changed from likedByMe to array of usernames for cumulative logic
