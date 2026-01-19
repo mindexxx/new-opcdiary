@@ -93,7 +93,7 @@ export interface ForumPost {
   link?: string | null; // Added link
   timestamp: number;
   likes: number;
-  likedByMe?: boolean;
+  likedBy?: string[]; // Changed from likedByMe to array of usernames for cumulative logic
   comments: number;
   commentsList?: ForumComment[];
   tags: string[];

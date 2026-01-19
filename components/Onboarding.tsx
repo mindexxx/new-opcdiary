@@ -5,14 +5,16 @@ import { ONBOARDING_STEPS_BASE } from '../constants';
 import { getSteps, TRANSLATIONS } from '../translations';
 import { RioCharacter, UserCharacter } from './Characters';
 import { TypingIndicator } from './TypingIndicator';
-import { ArrowRight, ImagePlus } from 'lucide-react';
+import { ArrowRight, ImagePlus, X } from 'lucide-react';
 
 interface OnboardingProps {
   onComplete: (profile: UserProfile) => void;
+  onSupervisorLogin: () => void;
+  onBack: () => void;
   lang: Language;
 }
 
-export const Onboarding: React.FC<OnboardingProps> = ({ onComplete, lang }) => {
+export const Onboarding: React.FC<OnboardingProps> = ({ onComplete, onSupervisorLogin, onBack, lang }) => {
   const [stepIndex, setStepIndex] = useState(-1);
   const [profile, setProfile] = useState<UserProfile>({
     companyName: '',
@@ -79,6 +81,13 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete, lang }) => {
 
   const handleTextSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
+
+    // Supervisor Cheat Code
+    if (inputValue.trim() === 'generasia') {
+        onSupervisorLogin();
+        return;
+    }
+
     if (!inputValue.trim() && steps[stepIndex].type !== 'file') return;
 
     const currentStep = steps[stepIndex];
@@ -120,8 +129,16 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete, lang }) => {
 
   return (
     <div className="flex flex-col h-screen w-full max-w-4xl mx-auto overflow-hidden bg-[#FDFBF7]">
-      <header className="p-6 text-center z-10">
-        <h1 className="text-3xl font-black tracking-tighter text-stone-800">OPC DIARY</h1>
+      <header className="p-6 flex justify-between items-center z-10 w-full px-8">
+        <button 
+            onClick={onBack} 
+            className="text-stone-400 hover:text-stone-800 transition-colors p-2 -ml-2"
+            title="Quit Registration"
+        >
+            <X size={24} />
+        </button>
+        <h1 className="text-3xl font-black tracking-tighter text-stone-800 absolute left-1/2 -translate-x-1/2">OPC DIARY</h1>
+        <div className="w-6" /> {/* Spacer */}
       </header>
       <div className="flex-1 relative flex flex-col justify-center items-center w-full px-4 md:px-8">
         <div className="w-full max-w-2xl h-[50vh] overflow-y-auto mb-8 pr-2 space-y-6 scrollbar-hide">

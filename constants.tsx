@@ -79,7 +79,7 @@ export const MOCK_FORUM_POSTS: ForumPost[] = [
     content: "Just launched my MVP on Product Hunt! The feedback is overwhelming but I found a critical bug in the login flow. Anyone else deal with post-launch panic?",
     timestamp: Date.now() - 10000000,
     likes: 42,
-    likedByMe: false,
+    likedBy: [],
     comments: 2,
     commentsList: [
       { id: 'c1', author: { name: 'DevSarah', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Sarah' }, content: "Panic is part of the process! Fix it and move on.", timestamp: Date.now() - 900000 },
@@ -97,7 +97,7 @@ export const MOCK_FORUM_POSTS: ForumPost[] = [
     content: "Looking for recommendations on payment gateways that support crypto but are user friendly for non-techies. Any suggestions?",
     timestamp: Date.now() - 5000000,
     likes: 15,
-    likedByMe: true,
+    likedBy: [],
     comments: 0,
     commentsList: [],
     tags: ['Help', 'Payments']

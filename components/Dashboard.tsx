@@ -3,7 +3,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { UserProfile, Language, Project, DiaryEntry, Comment, Group, ProjectStats } from '../types';
 import { TRANSLATIONS } from '../translations';
 import { MOCK_GROUPS } from '../constants';
-import { Plus, Image as ImageIcon, Send, Trash2, Edit2, Layout, ArrowLeft, ArrowRight, ExternalLink, Globe, Clock, DollarSign, TrendingUp, Save, X, Camera, Link as LinkIcon, Upload, Users, Search, Check, UserPlus, Info, Maximize2, MessageCircle, ChevronDown, ChevronUp, LogOut, MessageSquare, Target, Hourglass, Coins, Wallet } from 'lucide-react';
+import { Plus, Image as ImageIcon, Send, Trash2, Edit2, Layout, ArrowLeft, ArrowRight, ExternalLink, Globe, Clock, DollarSign, TrendingUp, Save, X, Camera, Link as LinkIcon, Upload, Users, Search, Check, UserPlus, Info, Maximize2, MessageCircle, ChevronDown, ChevronUp, LogOut, MessageSquare, Target, Hourglass, Coins, Wallet, Crown, Eye, MessageCircleWarning, Database, Zap, Mail, Scroll } from 'lucide-react';
 import { Roadmap } from './Roadmap';
 import { Forum } from './Forum';
 
@@ -12,6 +12,17 @@ interface DashboardProps {
   lang: Language;
   role: 'owner' | 'friend' | 'guest';
   onReset: () => void;
+  isSupervisor?: boolean;
+  allUsers?: UserProfile[]; // passed from App
+  onUpdateProfile?: (p: UserProfile) => void; // passed from App
+}
+
+interface MessageItem {
+  id: string;
+  sender: string; // 'supervisor' | 'user' | specific user name
+  content: string;
+  timestamp: number;
+  read?: boolean; // Track if message is read
 }
 
 // Fixed: Moved outside component to prevent re-render focus loss
@@ -46,9 +57,7 @@ const analyzeEntryFinancials = (text: string) => {
     let cost = 0;
     let profit = 0;
 
-    // Matches "cost $50", "spent: 50", "paid 50", "cost 50k"
     const costRegex = /(?:cost|spend|spent|expense|paid)[\s\w:=-]*?\$?\s*(\d+(?:,\d{3})*(?:\.\d+)?)/gi;
-    // Matches "profit $200", "earned 200", "made 200"
     const profitRegex = /(?:profit|earn|earned|revenue|income|made)[\s\w:=-]*?\$?\s*(\d+(?:,\d{3})*(?:\.\d+)?)/gi;
 
     let match;
@@ -88,12 +97,12 @@ const calculateTimeSpent = (entries: DiaryEntry[]) => {
   return `${diffDays}d`;
 };
 
-export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, lang, role, onReset }) => {
+export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, lang, role, onReset, isSupervisor = false, allUsers = [], onUpdateProfile }) => {
   const t = TRANSLATIONS[lang];
-  const isOwner = role === 'owner';
+  const isOwner = role === 'owner' && !isSupervisor;
   
   // State for current view mode
-  const [viewMode, setViewMode] = useState<'home' | 'forum' | 'guest'>('home');
+  const [viewMode, setViewMode] = useState<'home' | 'forum' | 'guest' | 'supervisor-hub'>(isSupervisor ? 'supervisor-hub' : 'home');
   const [guestProfile, setGuestProfile] = useState<UserProfile | null>(null);
 
   const [profile, setProfile] = useState<UserProfile>(initialProfile);
@@ -116,16 +125,40 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, l
   const [newProjectForm, setNewProjectForm] = useState({ name: '', description: '' });
   
   // Social State
-  const [socialTab, setSocialTab] = useState<'groups' | 'friends'>('groups');
   const [searchQuery, setSearchQuery] = useState('');
   const [showNetworkModal, setShowNetworkModal] = useState(false);
 
-  // Persistence for Social Actions
-  const [joinedGroups, setJoinedGroups] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem('opc_joined_groups') || '[]'); } catch { return []; }
+  // Supervisor State
+  const [showSupervisorSearch, setShowSupervisorSearch] = useState(false);
+  const [supervisorQuery, setSupervisorQuery] = useState('');
+  
+  // OPC LETTER SYSTEM STATE
+  const [showLetterModal, setShowLetterModal] = useState(false);
+  const [letterView, setLetterView] = useState<'inbox' | 'chat'>('inbox');
+  const [activeChatPartner, setActiveChatPartner] = useState<{name: string, isSupervisor: boolean} | null>(null);
+  const [letterMessages, setLetterMessages] = useState<MessageItem[]>([]);
+  const [letterInput, setLetterInput] = useState('');
+  const [letterSearchQuery, setLetterSearchQuery] = useState('');
+  const chatBottomRef = useRef<HTMLDivElement>(null);
+  
+  // ALERT POLLING STATE
+  const [hasUnreadSupervisorMsg, setHasUnreadSupervisorMsg] = useState(false);
+  const [unreadPartners, setUnreadPartners] = useState<Set<string>>(new Set());
+  const [userUnreadMap, setUserUnreadMap] = useState<Record<string, boolean>>({});
+  const [friendRequestsCount, setFriendRequestsCount] = useState(0);
+
+  // Feedback State
+  const [toast, setToast] = useState<{msg: string, type: 'success' | 'error'} | null>(null);
+
+  // Persistence for Social Actions (Using a map for graph relations)
+  // Schema: { "UserA": ["UserB", "UserC"], "UserB": ["UserA"] }
+  const [connections, setConnections] = useState<Record<string, string[]>>(() => {
+    try { return JSON.parse(localStorage.getItem('opc_connections') || '{}'); } catch { return {}; }
   });
-  const [addedFriends, setAddedFriends] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem('opc_added_friends') || '[]'); } catch { return []; }
+  
+  // Supervisor Persistence
+  const [followedUsers, setFollowedUsers] = useState<string[]>(() => {
+      try { return JSON.parse(localStorage.getItem('opc_supervisor_following') || '[]'); } catch { return []; }
   });
 
   // Popups
@@ -133,21 +166,342 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, l
   const [imagePreview, setImagePreview] = useState<string | null>(null);
 
   // Computed display profile (User's or Guest's)
-  const displayProfile = viewMode === 'guest' && guestProfile ? guestProfile : profile;
+  const displayProfile = (viewMode === 'guest' || viewMode === 'supervisor-hub') && guestProfile ? guestProfile : profile;
+  // Determine who is the "target" user for data loading (Projects)
+  const targetUser = (viewMode === 'guest' && guestProfile) ? guestProfile : profile;
+  
   const canEdit = viewMode === 'home' && isOwner;
   
   // Computed Project Stats
   const projectTimeSpent = activeProject ? calculateTimeSpent(activeProject.entries) : '0d';
 
-  const handlePublishDiary = async () => {
+  // Helper: Toast
+  const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
+      setToast({ msg, type });
+      setTimeout(() => setToast(null), 3000);
+  };
+
+  useEffect(() => {
+      setProfile(initialProfile);
+      setEditForm(initialProfile);
+  }, [initialProfile]);
+
+  // Load Projects for the specific Target User (Persistence)
+  useEffect(() => {
+      const key = `opc_projects_${targetUser.companyName}`;
+      try {
+          const savedProjects = JSON.parse(localStorage.getItem(key) || '[]');
+          setProjects(savedProjects);
+          setActiveProject(null);
+      } catch (e) {
+          setProjects([]);
+      }
+  }, [targetUser.companyName]);
+
+  // POLLING EFFECT FOR ALERTS (Requests & Messages)
+  useEffect(() => {
+    const checkAlerts = () => {
+        // 1. Friend Requests Logic
+        const myName = profile.companyName;
+        // Count how many users follow me, that I don't follow back
+        const reqCount = Object.keys(connections).filter(otherUser => {
+            const theyFollowMe = connections[otherUser]?.includes(myName);
+            const iFollowThem = connections[myName]?.includes(otherUser);
+            return theyFollowMe && !iFollowThem;
+        }).length;
+        setFriendRequestsCount(reqCount);
+
+        // 2. Message Logic
+        if (isSupervisor) {
+            // Supervisor: Check all followed users for replies
+            const newMap: Record<string, boolean> = {};
+            followedUsers.forEach(companyName => {
+                const key = `opc_instructions_${companyName}`;
+                try {
+                    const msgs: MessageItem[] = JSON.parse(localStorage.getItem(key) || '[]');
+                    if (msgs.length > 0) {
+                        const last = msgs[msgs.length - 1];
+                        if (last.sender === 'user' && !last.read) {
+                            newMap[companyName] = true;
+                        }
+                    }
+                } catch {}
+            });
+            setUserUnreadMap(newMap);
+        } else {
+            // User: Check for supervisor instruction
+            const key = `opc_instructions_${profile.companyName}`;
+            try {
+                const msgs: MessageItem[] = JSON.parse(localStorage.getItem(key) || '[]');
+                if (msgs.length > 0) {
+                    const last = msgs[msgs.length - 1];
+                    if (last.sender === 'supervisor' && !last.read) {
+                        setHasUnreadSupervisorMsg(true);
+                    } else {
+                        setHasUnreadSupervisorMsg(false);
+                    }
+                } else {
+                     setHasUnreadSupervisorMsg(false);
+                }
+            } catch {}
+
+            // User: Check for friend messages
+            // Re-calculate mutual friends for scanning (since we are inside effect/interval)
+            const currentFriends = allUsers.concat(MOCK_GROUPS.filter(g => g.type === 'user') as any).filter(u => {
+                if (u.companyName === profile.companyName) return false;
+                const iFollow = connections[profile.companyName]?.includes(u.companyName);
+                const followsMe = connections[u.companyName]?.includes(profile.companyName);
+                return iFollow && followsMe;
+            });
+
+            const newUnreadPartners = new Set<string>();
+            currentFriends.forEach(friend => {
+                const names = [profile.companyName, friend.companyName].sort();
+                const chatKey = `opc_chat_${names[0]}_${names[1]}`;
+                try {
+                    const msgs: MessageItem[] = JSON.parse(localStorage.getItem(chatKey) || '[]');
+                    if (msgs.length > 0) {
+                        const last = msgs[msgs.length - 1];
+                        // If sender is Friend and NOT read
+                        if (last.sender === friend.companyName && !last.read) {
+                            newUnreadPartners.add(friend.companyName);
+                        }
+                    }
+                } catch {}
+            });
+            setUnreadPartners(newUnreadPartners);
+        }
+    };
+
+    checkAlerts(); 
+    const interval = setInterval(checkAlerts, 2000); 
+    return () => clearInterval(interval);
+  }, [isSupervisor, followedUsers, profile.companyName, connections, allUsers]); 
+
+  const saveProjectsToStorage = (newProjects: Project[]) => {
+      const key = `opc_projects_${targetUser.companyName}`;
+      localStorage.setItem(key, JSON.stringify(newProjects));
+      setProjects(newProjects);
+  };
+
+  // --- OPC LETTER SYSTEM LOGIC ---
+
+  const getChatStorageKey = (partnerName: string, isPartnerSupervisor: boolean) => {
+      if (isPartnerSupervisor) {
+          return `opc_instructions_${profile.companyName}`;
+      }
+      const names = [profile.companyName, partnerName].sort();
+      return `opc_chat_${names[0]}_${names[1]}`;
+  };
+
+  const loadLetterMessages = (partnerName: string, isPartnerSupervisor: boolean) => {
+      const key = getChatStorageKey(partnerName, isPartnerSupervisor);
+      try {
+          const msgs: MessageItem[] = JSON.parse(localStorage.getItem(key) || '[]');
+          
+          // Mark as read when loading (if I am the recipient)
+          let hasUpdates = false;
+          const updatedMsgs = msgs.map(msg => {
+              // If it's the partner who sent it, mark as read
+              const isPartnerSender = isPartnerSupervisor ? msg.sender === 'supervisor' : msg.sender === partnerName;
+              if (isPartnerSender && !msg.read) {
+                  hasUpdates = true;
+                  return { ...msg, read: true };
+              }
+              return msg;
+          });
+
+          setLetterMessages(updatedMsgs);
+          
+          if (hasUpdates) {
+              localStorage.setItem(key, JSON.stringify(updatedMsgs));
+              if (isPartnerSupervisor) setHasUnreadSupervisorMsg(false);
+              // Update local state immediately for responsiveness
+              if (!isPartnerSupervisor) {
+                  setUnreadPartners(prev => {
+                      const next = new Set(prev);
+                      next.delete(partnerName);
+                      return next;
+                  });
+              }
+          }
+
+      } catch {
+          setLetterMessages([]);
+      }
+  };
+
+  const openLetterSystem = () => {
+      setLetterView('inbox');
+      setShowLetterModal(true);
+  };
+
+  const openChatWith = (name: string, isPartnerSupervisor: boolean) => {
+      setActiveChatPartner({ name, isSupervisor: isPartnerSupervisor });
+      loadLetterMessages(name, isPartnerSupervisor);
+      setLetterView('chat');
+      setTimeout(() => chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+  };
+
+  const handleSendLetter = () => {
+      if (!letterInput.trim() || !activeChatPartner) return;
+      
+      const newMsg: MessageItem = {
+          id: Date.now().toString(),
+          sender: isSupervisor ? 'supervisor' : profile.companyName,
+          content: letterInput,
+          timestamp: Date.now(),
+          read: false // New messages are unread by default
+      };
+      
+      if (!isSupervisor && activeChatPartner.isSupervisor) {
+          newMsg.sender = 'user';
+      }
+
+      const updated = [...letterMessages, newMsg];
+      setLetterMessages(updated);
+      
+      const key = getChatStorageKey(activeChatPartner.name, activeChatPartner.isSupervisor);
+      localStorage.setItem(key, JSON.stringify(updated));
+      
+      setLetterInput('');
+      setTimeout(() => chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+  };
+
+  const openSupervisorChat = (targetUser: UserProfile) => {
+       const key = `opc_instructions_${targetUser.companyName}`;
+       try {
+          const msgs: MessageItem[] = JSON.parse(localStorage.getItem(key) || '[]');
+          
+          // Mark User messages as read for Supervisor
+          let hasUpdates = false;
+          const updatedMsgs = msgs.map(msg => {
+              if (msg.sender === 'user' && !msg.read) {
+                  hasUpdates = true;
+                  return { ...msg, read: true };
+              }
+              return msg;
+          });
+          
+          setLetterMessages(updatedMsgs);
+          if (hasUpdates) {
+              localStorage.setItem(key, JSON.stringify(updatedMsgs));
+              // Update local unread map immediately
+              setUserUnreadMap(prev => ({ ...prev, [targetUser.companyName]: false }));
+          }
+       } catch { setLetterMessages([]); }
+       
+       setActiveChatPartner({ name: targetUser.companyName, isSupervisor: false }); 
+       setLetterView('chat');
+       setShowLetterModal(true);
+  };
+  
+  const handleSupervisorSend = () => {
+      if (!letterInput.trim() || !activeChatPartner) return;
+      const newMsg: MessageItem = {
+          id: Date.now().toString(),
+          sender: 'supervisor',
+          content: letterInput,
+          timestamp: Date.now(),
+          read: false
+      };
+      const updated = [...letterMessages, newMsg];
+      setLetterMessages(updated);
+      const key = `opc_instructions_${activeChatPartner.name}`;
+      localStorage.setItem(key, JSON.stringify(updated));
+      setLetterInput('');
+      setTimeout(() => chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+      showToast('Transmission Sent');
+  };
+
+  // --- FRIENDSHIP LOGIC ---
+
+  const handleFollowToggle = (e: React.MouseEvent, targetName: string, isMock: boolean) => {
+      e.stopPropagation();
+      
+      const myName = profile.companyName;
+      const currentConnections = { ...connections };
+      
+      // Initialize arrays if they don't exist
+      if (!currentConnections[myName]) currentConnections[myName] = [];
+      if (!currentConnections[targetName]) currentConnections[targetName] = [];
+
+      const isFollowing = currentConnections[myName].includes(targetName);
+      const followsMe = currentConnections[targetName].includes(myName);
+
+      if (isFollowing) {
+          // Unfollow
+          currentConnections[myName] = currentConnections[myName].filter(n => n !== targetName);
+      } else {
+          // Follow
+          currentConnections[myName].push(targetName);
+          
+          // If it's a mock user, auto-follow back to simulate friendship
+          if (isMock) {
+              if (!currentConnections[targetName].includes(myName)) {
+                  currentConnections[targetName].push(myName);
+              }
+          }
+      }
+
+      // Check if we just became friends (mutual follow)
+      // We check the NEW state. 
+      const nowIFollow = currentConnections[myName].includes(targetName);
+      const nowFollowsMe = currentConnections[targetName].includes(myName); // For mock, this is updated above
+
+      if (nowIFollow && nowFollowsMe && (!isFollowing)) {
+         showToast(`You are now connected with ${targetName}!`);
+      }
+
+      setConnections(currentConnections);
+      localStorage.setItem('opc_connections', JSON.stringify(currentConnections));
+  };
+
+  // Helper to check relationship status
+  const getRelationStatus = (targetName: string) => {
+      const myName = profile.companyName;
+      const iFollow = connections[myName]?.includes(targetName);
+      const followsMe = connections[targetName]?.includes(myName);
+
+      if (iFollow && followsMe) return 'friend';
+      if (iFollow) return 'requested';
+      if (followsMe) return 'follower'; // They follow me, I don't follow back
+      return 'none';
+  };
+
+  // Filter mocked groups and users for the network modal
+  // Filter available friends for OPC Letter (Must be MUTUAL Friends)
+  const mutualFriends = allUsers.concat(MOCK_GROUPS.filter(g => g.type === 'user') as any).filter(u => {
+      if (u.companyName === profile.companyName) return false;
+      return getRelationStatus(u.companyName) === 'friend';
+  });
+
+  const searchedFriends = mutualFriends.filter(u => 
+      u.companyName.toLowerCase().includes(letterSearchQuery.toLowerCase())
+  );
+
+  // Combined list for "Find Friends" modal: All Users + Mock Users
+  // Filter out self
+  const allPotentialFriends = [...MOCK_GROUPS.filter(g => g.type === 'user'), ...allUsers].filter(u => 
+      ('name' in u ? u.name : u.companyName) !== profile.companyName &&
+      ('name' in u ? u.name : u.companyName).toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  // --- GENERAL HANDLERS ---
+
+  const handleSaveProfile = () => {
+      setProfile(editForm);
+      if (onUpdateProfile) {
+          onUpdateProfile(editForm);
+      }
+      setIsEditingProfile(false);
+      showToast('Profile Updated Successfully');
+  };
+
+  const handlePublishDiary = async () => { /* ... existing ... */ 
     if (!activeProject || (!diaryInput.trim() && !diaryImage)) return;
-    
     setLoading(true);
-    
-    // Analyze content for stats
     const { cost: detectedCost, profit: detectedProfit } = analyzeEntryFinancials(diaryInput);
-    
-    // Simulate API call
     setTimeout(() => {
       const newEntry: DiaryEntry = {
         id: Date.now().toString(),
@@ -157,70 +511,61 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, l
         date: new Date().toLocaleDateString(),
         comments: []
       };
-      
-      // Update Stats
       const currentCost = activeProject.stats ? parseCurrency(activeProject.stats.cost) : 0;
       const currentProfit = activeProject.stats ? parseCurrency(activeProject.stats.profit) : 0;
-      
       const newStats: ProjectStats = {
           stage: activeProject.stats?.stage || 'Idea',
-          timeSpent: calculateTimeSpent([...activeProject.entries, newEntry]), // Pre-calc for consistency though UI uses dynamic
+          timeSpent: calculateTimeSpent([...activeProject.entries, newEntry]),
           cost: formatCurrency(currentCost + detectedCost),
           profit: formatCurrency(currentProfit + detectedProfit)
       };
-      
       const updated = { 
           ...activeProject, 
           entries: [newEntry, ...activeProject.entries],
           stats: newStats
       };
-      
       setActiveProject(updated);
-      setProjects(projects.map(p => p.id === updated.id ? updated : p));
+      const updatedProjects = projects.map(p => p.id === updated.id ? updated : p);
+      saveProjectsToStorage(updatedProjects);
       setDiaryInput('');
       setDiaryImage(null);
       setLoading(false);
     }, 800);
   };
 
-  const handleCreateProject = () => {
+  const handleCreateProject = () => { /* ... existing ... */ 
      if(!newProjectForm.name.trim()) return;
-
      const newProj: Project = {
         id: Date.now().toString(),
         name: newProjectForm.name,
         description: newProjectForm.description || "A new journey begins.",
-        stats: {
-            stage: 'Idea',
-            timeSpent: '0d',
-            cost: '$0',
-            profit: '$0'
-        },
+        stats: { stage: 'Idea', timeSpent: '0d', cost: '$0', profit: '$0' },
         entries: []
      };
-     setProjects([...projects, newProj]);
+     const updatedProjects = [...projects, newProj];
+     saveProjectsToStorage(updatedProjects);
      setActiveProject(newProj);
      setShowProjectModal(false);
      setNewProjectForm({ name: '', description: '' });
   };
 
-  const handleUpdateProjectStats = (field: keyof ProjectStats, value: string) => {
+  const handleUpdateProjectStats = (field: keyof ProjectStats, value: string) => { /* ... existing ... */
       if (!activeProject) return;
       const updatedStats = { ...activeProject.stats, [field]: value } as ProjectStats;
       const updatedProject = { ...activeProject, stats: updatedStats };
       setActiveProject(updatedProject);
-      setProjects(projects.map(p => p.id === updatedProject.id ? updatedProject : p));
+      const updatedProjects = projects.map(p => p.id === updatedProject.id ? updatedProject : p);
+      saveProjectsToStorage(updatedProjects);
   };
 
   const toggleEditProfile = () => {
     if (isEditingProfile) {
-      setProfile(editForm);
-      // Persist to local storage on save
-      localStorage.setItem('opc_user_profile', JSON.stringify(editForm));
+       setEditForm(profile);
+       setIsEditingProfile(false);
     } else {
       setEditForm(profile);
+      setIsEditingProfile(true);
     }
-    setIsEditingProfile(!isEditingProfile);
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>, field: 'avatar' | 'projectCover' | 'diary') => {
@@ -238,68 +583,52 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, l
     }
   };
 
-  const handlePostComment = (entryId: string) => {
+  const handlePostComment = (entryId: string) => { /* ... existing ... */ 
     const text = commentInputs[entryId];
     if (!text || !text.trim()) return;
-
     if (!activeProject) return;
-
     const newComment: Comment = {
       id: Date.now().toString(),
-      author: profile.companyName, // Always post as self
+      author: isSupervisor ? 'Supervisor' : profile.companyName,
       content: text,
       isOwner: viewMode === 'home',
-      avatar: profile.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=Guest'
+      avatar: isSupervisor ? 'https://ui-avatars.com/api/?name=Supervisor&background=000&color=fff' : (profile.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=Guest')
     };
-
     const updatedEntries = activeProject.entries.map(e => {
       if (e.id === entryId) {
         return { ...e, comments: [...e.comments, newComment] };
       }
       return e;
     });
-
     const updatedProject = { ...activeProject, entries: updatedEntries };
     setActiveProject(updatedProject);
-    setProjects(projects.map(p => p.id === updatedProject.id ? updatedProject : p));
+    const updatedProjects = projects.map(p => p.id === updatedProject.id ? updatedProject : p);
+    saveProjectsToStorage(updatedProjects);
     setCommentInputs(prev => ({ ...prev, [entryId]: '' }));
-    
-    // Auto expand comments if posted
     setExpandedComments(prev => ({ ...prev, [entryId]: true }));
   };
 
   const toggleCommentExpansion = (entryId: string) => {
     setExpandedComments(prev => ({ ...prev, [entryId]: !prev[entryId] }));
   };
-
-  const handleJoinToggle = (e: React.MouseEvent, id: string) => {
-    e.stopPropagation();
-    const newSet = joinedGroups.includes(id) 
-        ? joinedGroups.filter(g => g !== id)
-        : [...joinedGroups, id];
-    setJoinedGroups(newSet);
-    localStorage.setItem('opc_joined_groups', JSON.stringify(newSet));
+  
+  const handleFollowUser = (e: React.MouseEvent, name: string) => {
+      e.stopPropagation();
+      const newSet = followedUsers.includes(name) ? followedUsers : [...followedUsers, name];
+      setFollowedUsers(newSet);
+      localStorage.setItem('opc_supervisor_following', JSON.stringify(newSet));
+      setShowSupervisorSearch(false);
   };
 
-  const handleFriendToggle = (e: React.MouseEvent, id: string) => {
-    e.stopPropagation();
-    const newSet = addedFriends.includes(id) 
-        ? addedFriends.filter(f => f !== id)
-        : [...addedFriends, id];
-    setAddedFriends(newSet);
-    localStorage.setItem('opc_added_friends', JSON.stringify(newSet));
-  };
-
-  const filteredSocials = MOCK_GROUPS.filter(g => 
-    g.name.toLowerCase().includes(searchQuery.toLowerCase())
+  const supervisorSearchResults = allUsers.filter(u => 
+      u.companyName.toLowerCase().includes(supervisorQuery.toLowerCase())
   );
 
   const visibleEntries = activeProject 
     ? (isDiaryExpanded ? activeProject.entries : activeProject.entries.slice(0, 5))
     : [];
 
-  const handleVisit = (group: Group) => {
-    // Simulate fetching user profile
+  const handleVisitGroup = (group: Group) => {
     const fakeProfile: UserProfile = {
       companyName: group.name,
       description: group.description,
@@ -314,20 +643,220 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, l
     setGuestProfile(fakeProfile);
     setViewMode('guest');
     setShowNetworkModal(false);
-    setActiveProject(null); // Reset active project so they see list first
+    setActiveProject(null); 
   };
+
+  const handleVisitUser = (user: UserProfile) => {
+      setGuestProfile(user);
+      setViewMode('guest');
+      setShowNetworkModal(false);
+      setShowSupervisorSearch(false);
+      setActiveProject(null);
+  };
+
+  // SUPERVISOR HUB RENDER
+  if (viewMode === 'supervisor-hub' && isSupervisor) {
+      const followingList = allUsers.filter(u => followedUsers.includes(u.companyName));
+      return (
+        <div className="min-h-screen bg-stone-900 p-8 pb-20">
+            {toast && (
+                <div className="fixed bottom-8 left-1/2 -translate-x-1/2 bg-emerald-500 text-white px-6 py-3 rounded-full shadow-xl z-[100] animate-in fade-in slide-in-from-bottom-2">
+                    <div className="flex items-center gap-2">
+                        <Check size={16} className="text-white" />
+                        <span className="text-xs font-bold uppercase tracking-widest">{toast.msg}</span>
+                    </div>
+                </div>
+            )}
+            <div className="max-w-5xl mx-auto">
+                <div className="flex justify-between items-center mb-8">
+                   <div className="flex items-center gap-3">
+                     <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center shadow-lg">
+                       <Crown size={20} className="text-stone-900" />
+                     </div>
+                     <div>
+                         <h1 className="text-2xl font-black tracking-tighter text-white">SUPERVISOR</h1>
+                         <p className="text-stone-500 font-mono text-xs uppercase tracking-widest">Control Center</p>
+                     </div>
+                   </div>
+                   <button onClick={onReset} className="text-stone-400 hover:text-white flex items-center gap-2 text-xs font-bold uppercase">
+                       Log Out <LogOut size={14} />
+                   </button>
+                </div>
+                <div className="flex justify-end mb-12">
+                     <button 
+                        onClick={() => setViewMode('forum')}
+                        className="px-6 py-2.5 rounded-full bg-stone-800 text-white border border-stone-700 hover:border-white text-[10px] font-bold uppercase tracking-widest transition-all flex items-center gap-2"
+                     >
+                        Forum <MessageSquare size={12} />
+                     </button>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-6">
+                    <button 
+                        onClick={() => setShowSupervisorSearch(true)}
+                        className="aspect-square rounded-[2rem] border-2 border-dashed border-stone-700 hover:border-white hover:bg-stone-800 transition-all flex flex-col items-center justify-center gap-2 group"
+                    >
+                        <div className="bg-stone-800 p-3 rounded-full text-stone-500 group-hover:bg-white group-hover:text-stone-900 transition-colors">
+                            <Plus size={24} />
+                        </div>
+                        <span className="text-stone-500 font-black text-xs uppercase tracking-widest group-hover:text-white">Track User</span>
+                    </button>
+                    {followingList.map(user => (
+                        <div 
+                            key={user.companyName} 
+                            onClick={() => handleVisitUser(user)}
+                            className="aspect-square rounded-[2rem] bg-stone-800 p-4 flex flex-col items-center justify-between cursor-pointer hover:bg-stone-700 transition-all group relative overflow-hidden"
+                        >
+                            {userUnreadMap[user.companyName] && (
+                                <div className="absolute top-2 right-2 w-3 h-3 bg-rose-500 rounded-full animate-pulse shadow-sm z-20" title="New Reply"></div>
+                            )}
+                            <div className="w-full flex flex-col items-center gap-3">
+                                <div className="w-14 h-14 rounded-full overflow-hidden border-2 border-stone-600 group-hover:border-white transition-colors">
+                                    {user.avatar ? <img src={user.avatar} className="w-full h-full object-cover" /> : (
+                                        <div className="w-full h-full bg-stone-700 flex items-center justify-center text-white font-bold">{user.companyName[0]}</div>
+                                    )}
+                                </div>
+                                <div className="text-center z-10 w-full">
+                                    <h3 className="text-white font-bold text-xs truncate w-full">{user.companyName}</h3>
+                                    <p className="text-stone-500 text-[9px] font-mono uppercase tracking-widest">Active</p>
+                                </div>
+                            </div>
+                            <button 
+                                onClick={(e) => { e.stopPropagation(); openSupervisorChat(user); }}
+                                className="w-full bg-stone-900 hover:bg-rose-600 text-white text-[9px] py-2 rounded-lg font-bold uppercase tracking-wider flex items-center justify-center gap-2 border border-stone-700 hover:border-rose-500 transition-all"
+                            >
+                                <Zap size={10} /> Direct Line
+                            </button>
+                        </div>
+                    ))}
+                </div>
+            </div>
+            {/* Reuse Letter Modal for Supervisor Chat View Only */}
+            {showLetterModal && activeChatPartner && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+                     <div className="bg-stone-900 w-full max-w-md h-[600px] rounded-3xl flex flex-col relative border border-stone-700 shadow-2xl overflow-hidden">
+                        <div className="p-4 border-b border-stone-800 flex justify-between items-center bg-stone-900 z-10">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-full bg-rose-600 flex items-center justify-center text-white font-bold">
+                                    <Zap size={20} />
+                                </div>
+                                <div>
+                                    <h3 className="text-white font-bold text-sm uppercase tracking-wide">Secure Line</h3>
+                                    <p className="text-stone-500 text-[10px] font-mono">Target: {activeChatPartner.name}</p>
+                                </div>
+                            </div>
+                            <button onClick={() => setShowLetterModal(false)} className="text-stone-500 hover:text-white p-2"><X size={20} /></button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-stone-900 custom-scrollbar">
+                            {letterMessages.length === 0 && (
+                                <div className="text-center py-8 opacity-30">
+                                    <Database size={32} className="mx-auto mb-2 text-stone-500" />
+                                    <p className="text-stone-500 text-xs font-mono uppercase">Empty Log</p>
+                                </div>
+                            )}
+                            {letterMessages.map(msg => (
+                                <div key={msg.id} className={`flex w-full ${msg.sender === 'supervisor' ? 'justify-end' : 'justify-start'}`}>
+                                    <div className={`max-w-[80%] p-3 rounded-2xl text-xs font-medium leading-relaxed ${
+                                        msg.sender === 'supervisor' 
+                                        ? 'bg-rose-600 text-white rounded-br-none' 
+                                        : 'bg-stone-800 text-stone-200 rounded-bl-none border border-stone-700'
+                                    }`}>
+                                        <p>{msg.content}</p>
+                                        <span className="block text-[8px] opacity-50 mt-1 text-right font-mono">
+                                            {new Date(msg.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}
+                                        </span>
+                                    </div>
+                                </div>
+                            ))}
+                            <div ref={chatBottomRef} />
+                        </div>
+                        <div className="p-4 bg-stone-900 border-t border-stone-800">
+                             <div className="flex gap-2">
+                                 <input 
+                                    autoFocus
+                                    value={letterInput}
+                                    onChange={(e) => setLetterInput(e.target.value)}
+                                    placeholder="Transmit order..."
+                                    className="flex-1 bg-stone-800 text-white text-xs p-3 rounded-xl outline-none focus:ring-1 focus:ring-rose-500 border border-transparent placeholder:text-stone-600"
+                                    onKeyDown={(e) => e.key === 'Enter' && handleSupervisorSend()}
+                                 />
+                                 <button 
+                                    onClick={handleSupervisorSend}
+                                    disabled={!letterInput.trim()}
+                                    className="bg-white text-stone-900 p-3 rounded-xl hover:bg-stone-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                 >
+                                     <Send size={16} />
+                                 </button>
+                             </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+            
+            {/* Supervisor Search Modal */}
+             {showSupervisorSearch && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+                    <div className="bg-stone-900 border border-stone-700 rounded-[2rem] p-8 max-w-lg w-full relative">
+                         <button onClick={() => setShowSupervisorSearch(false)} className="absolute top-6 right-6 text-stone-500 hover:text-white"><X size={20}/></button>
+                         <h3 className="text-white font-black text-xl mb-6">Track Real User</h3>
+                         <div className="relative mb-6">
+                            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-stone-500" size={16} />
+                            <input 
+                                autoFocus
+                                value={supervisorQuery}
+                                onChange={(e) => setSupervisorQuery(e.target.value)}
+                                placeholder="Search user name..."
+                                className="w-full bg-stone-800 border border-stone-700 rounded-xl py-3 pl-12 pr-4 text-white outline-none focus:border-stone-500"
+                            />
+                         </div>
+                         <div className="space-y-2 max-h-60 overflow-y-auto">
+                             {supervisorSearchResults.map(user => (
+                                 <div key={user.companyName} className="flex items-center justify-between p-3 rounded-xl bg-stone-800 hover:bg-stone-700 cursor-pointer" onClick={() => handleVisitUser(user)}>
+                                     <div className="flex items-center gap-3">
+                                         {user.avatar ? <img src={user.avatar} className="w-8 h-8 rounded-full" /> : <div className="w-8 h-8 bg-stone-600 rounded-full"/>}
+                                         <span className="text-white font-bold text-sm">{user.companyName}</span>
+                                     </div>
+                                     {followedUsers.includes(user.companyName) ? (
+                                         <span className="text-stone-500 text-xs font-mono">Tracking</span>
+                                     ) : (
+                                         <button 
+                                            onClick={(e) => handleFollowUser(e, user.companyName)}
+                                            className="bg-white text-stone-900 px-3 py-1 rounded-lg text-xs font-bold uppercase"
+                                         >
+                                             Track
+                                         </button>
+                                     )}
+                                 </div>
+                             ))}
+                             {supervisorSearchResults.length === 0 && <p className="text-stone-600 text-center text-xs">No users found in database</p>}
+                         </div>
+                    </div>
+                </div>
+            )}
+        </div>
+      );
+  }
+
+  // --- REGULAR USER RENDER ---
 
   return (
     <div className="min-h-screen bg-[#FDFBF7] p-4 md:p-8 pb-20">
+      
+      {toast && (
+          <div className="fixed bottom-8 left-1/2 -translate-x-1/2 bg-stone-900 text-white px-6 py-3 rounded-full shadow-xl z-[100] animate-in fade-in slide-in-from-bottom-2">
+              <div className="flex items-center gap-2">
+                  <Check size={16} className="text-emerald-400" />
+                  <span className="text-xs font-bold uppercase tracking-widest">{toast.msg}</span>
+              </div>
+          </div>
+      )}
+
       <div className="max-w-5xl mx-auto">
-        
-        {/* Header */}
         <div className="flex justify-between items-center mb-6">
-           <div className="flex items-center gap-3 cursor-pointer" onClick={() => setViewMode('home')}>
-             <div className="w-8 h-8 bg-stone-900 rounded-lg flex items-center justify-center shadow-lg">
+           <div className="flex items-center gap-3 cursor-pointer" onClick={() => isSupervisor ? setViewMode('supervisor-hub') : setViewMode('home')}>
+             <div className={`w-8 h-8 rounded-lg flex items-center justify-center shadow-lg ${isSupervisor ? 'bg-rose-600' : 'bg-stone-900'}`}>
                <span className="text-white font-black text-xs">OPC</span>
              </div>
-             <h1 className="text-xl font-black tracking-tighter">DIARY</h1>
+             <h1 className="text-xl font-black tracking-tighter">DIARY {isSupervisor && <span className="text-rose-500 text-sm ml-2 font-mono">SUPERVISOR MODE</span>}</h1>
            </div>
            <div className="flex items-center gap-4">
               <button 
@@ -339,71 +868,78 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, l
            </div>
         </div>
 
-        {/* TOP NAV BAR - Social Tabs Left, Forum Button Right */}
-        <div className="mb-6 flex justify-between items-center relative z-40">
-            {/* Social Hub Trigger */}
-            <div className="flex bg-white rounded-full border border-stone-200 p-1 shadow-sm shrink-0">
+        {!(isSupervisor && viewMode === 'guest') && (
+            <div className="mb-6 flex justify-between items-center relative z-40">
                 <button 
-                    onClick={() => { setSocialTab('groups'); setShowNetworkModal(true); }}
-                    className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase transition-all flex items-center gap-2 ${socialTab === 'groups' && showNetworkModal ? 'bg-stone-800 text-white' : 'text-stone-400 hover:bg-stone-50 hover:text-stone-800'}`}
+                    onClick={() => setShowNetworkModal(true)}
+                    className="flex bg-white rounded-full border border-stone-200 px-5 py-2.5 items-center gap-2 hover:bg-stone-50 hover:border-stone-300 transition-all shadow-sm relative"
                 >
-                    Clans
+                    <Users size={16} className="text-stone-400" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-stone-600">Find Friends</span>
+                    {friendRequestsCount > 0 && (
+                        <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-rose-500 text-[8px] font-bold text-white ring-2 ring-white">
+                            {friendRequestsCount}
+                        </span>
+                    )}
                 </button>
-                <div className="w-px bg-stone-100 my-1 mx-1"></div>
-                <button 
-                    onClick={() => { setSocialTab('friends'); setShowNetworkModal(true); }}
-                    className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase transition-all flex items-center gap-2 ${socialTab === 'friends' && showNetworkModal ? 'bg-stone-800 text-white' : 'text-stone-400 hover:bg-stone-50 hover:text-stone-800'}`}
-                >
-                    Friends
-                </button>
-            </div>
 
-            {/* Forum/Diary Toggle Button */}
-            <button 
-              onClick={() => setViewMode(viewMode === 'forum' ? 'home' : 'forum')}
-              className={`px-6 py-2.5 rounded-full border text-[10px] font-bold uppercase tracking-widest transition-all flex items-center gap-2 shadow-sm
-                ${viewMode === 'forum' ? 'bg-white border-stone-200 text-stone-500 hover:border-stone-800 hover:text-stone-800' : 'bg-stone-900 text-white border-stone-900'}
-              `}
-            >
-              {viewMode === 'forum' ? 'Diary' : 'Forum'} 
-              {viewMode === 'forum' ? <Layout size={12} /> : <MessageSquare size={12} />} 
-            </button>
-        </div>
+                <div className="flex items-center gap-3">
+                    {/* User's OPC Letter Button */}
+                    {!isSupervisor && (
+                        <button 
+                           onClick={openLetterSystem}
+                           className="px-4 py-2.5 rounded-full bg-stone-50 text-stone-800 border border-stone-200 hover:bg-white hover:border-stone-300 text-[10px] font-bold uppercase tracking-widest transition-all flex items-center gap-2 relative shadow-sm"
+                        >
+                           <Mail size={12} className="fill-current" />
+                           OPC Letter
+                           {(hasUnreadSupervisorMsg || unreadPartners.size > 0) && (
+                               <span className="absolute -top-1 -right-1 w-3 h-3 bg-rose-600 border-2 border-white rounded-full animate-bounce"></span>
+                           )}
+                        </button>
+                    )}
+
+                    <button 
+                        onClick={() => setViewMode(viewMode === 'forum' ? 'home' : 'forum')}
+                        className={`px-6 py-2.5 rounded-full border text-[10px] font-bold uppercase tracking-widest transition-all flex items-center gap-2 shadow-sm
+                            ${viewMode === 'forum' ? 'bg-white border-stone-200 text-stone-500 hover:border-stone-800 hover:text-stone-800' : 'bg-stone-900 text-white border-stone-900'}
+                        `}
+                    >
+                        {viewMode === 'forum' ? 'Diary' : 'Forum'} 
+                        {viewMode === 'forum' ? <Layout size={12} /> : <MessageSquare size={12} />} 
+                    </button>
+                </div>
+            </div>
+        )}
         
-        {/* VIEW: FORUM */}
         {viewMode === 'forum' ? (
-           <Forum userProfile={profile} />
+           <Forum userProfile={profile} onImageClick={setImagePreview} />
         ) : (
-          /* VIEW: DIARY / PROFILE (Home or Guest) */
           <>
-            {viewMode === 'guest' && (
+            {(viewMode === 'guest' || isSupervisor) && (
                <div className="mb-6 flex items-center gap-2 fade-in-up">
-                  <button onClick={() => setViewMode('home')} className="flex items-center gap-2 text-stone-400 hover:text-stone-800 text-xs font-bold uppercase tracking-wider bg-white px-3 py-1.5 rounded-lg border border-stone-100 shadow-sm transition-all">
-                     <ArrowLeft size={12} /> Back to My Diary
+                  <button onClick={() => isSupervisor ? setViewMode('supervisor-hub') : setViewMode('home')} className="flex items-center gap-2 text-stone-400 hover:text-stone-800 text-xs font-bold uppercase tracking-wider bg-white px-3 py-1.5 rounded-lg border border-stone-100 shadow-sm transition-all">
+                     <ArrowLeft size={12} /> {isSupervisor ? 'Back to Hub' : 'Back to My Diary'}
                   </button>
                   <span className="text-stone-300 text-xs">|</span>
                   <span className="text-stone-400 text-xs font-mono uppercase">Viewing Guest Profile</span>
                </div>
             )}
-
-            {/* ULTRA-COMPACT PROFILE CARD V4 (Auto-Align) */}
+            {/* ... Rest of Dashboard ... */}
             <div className={`bg-white rounded-[2rem] p-5 shadow-lg shadow-stone-200/50 border border-stone-100 relative overflow-hidden mb-8 group/card fade-in-up ${viewMode === 'guest' ? 'ring-2 ring-stone-900/5' : ''}`}>
                 {canEdit && (
                   <button 
-                    onClick={toggleEditProfile}
+                    onClick={isEditingProfile ? handleSaveProfile : toggleEditProfile}
                     className={`absolute top-3 right-3 z-30 p-1.5 rounded-lg transition-all shadow-sm border 
                       ${isEditingProfile 
-                        ? 'bg-stone-900 text-white border-stone-900 hover:bg-black' 
+                        ? 'bg-emerald-500 text-white border-emerald-500 hover:bg-emerald-600' 
                         : 'bg-white text-stone-400 border-stone-100 hover:text-stone-800 hover:border-stone-200'}
                     `}
                   >
                     {isEditingProfile ? <Save size={12} /> : <Edit2 size={12} />}
                   </button>
                 )}
-
+                {/* Profile content reuse */}
                 <div className="flex flex-col sm:flex-row gap-5 items-stretch relative z-10">
-                    
-                    {/* Avatar & Basic Info */}
                     <div className="flex items-center gap-4 pr-5 sm:border-r border-stone-100 shrink-0">
                         <div className="relative group w-16 h-16 rounded-xl overflow-hidden border-2 border-stone-100 bg-stone-50 shadow-sm shrink-0">
                             {displayProfile.avatar ? (
@@ -450,10 +986,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, l
                             )}
                         </div>
                     </div>
-
-                    {/* Auto-Flowing Info Grid */}
                     <div className="flex-1 min-w-0 flex flex-col justify-between gap-3">
-                        {/* Description Row */}
                         <div className="w-full">
                             {isEditingProfile ? (
                                 <input 
@@ -471,16 +1004,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, l
                                 </p>
                             )}
                         </div>
-
-                        {/* Stats Row - Flex to Grid auto align */}
                         <div className="grid grid-cols-3 gap-2 w-full">
                             <StatItem icon={DollarSign} label="Valuation" value={displayProfile.valuation} field="valuation" color="text-blue-500" isEditingProfile={isEditingProfile} editForm={editForm} setEditForm={setEditForm} setInfoPopup={setInfoPopup} />
                             <StatItem icon={Clock} label="Launch" value={displayProfile.devTime} field="devTime" color="text-orange-500" isEditingProfile={isEditingProfile} editForm={editForm} setEditForm={setEditForm} setInfoPopup={setInfoPopup} />
                             <StatItem icon={TrendingUp} label="Users" value={displayProfile.audience} field="audience" color="text-emerald-500" isEditingProfile={isEditingProfile} editForm={editForm} setEditForm={setEditForm} setInfoPopup={setInfoPopup} />
                         </div>
                     </div>
-
-                    {/* Project Button */}
                     <div className="sm:w-32 shrink-0 flex flex-col">
                         <div className="flex-1 rounded-lg bg-stone-900 text-white relative overflow-hidden group/link flex flex-col justify-center items-center p-2 min-h-[60px]">
                             {(isEditingProfile ? editForm.projectCover : displayProfile.projectCover) && (
@@ -513,8 +1042,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, l
                     </div>
                 </div>
             </div>
-
-            {/* PROJECT ARCHIVE (Only show current user's projects or Guest's mocked projects) */}
+            
+            {/* Archive and Diary UI Logic reuse from previous code (shortened for brevity but functionality preserved) */}
             {!activeProject ? (
               <div className="fade-in-up">
                 <div className="flex items-center justify-between mb-6 px-2">
@@ -530,7 +1059,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, l
                   )}
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {(viewMode === 'guest' ? [] : projects).map(p => (
+                  {projects.map(p => (
                     <div 
                       key={p.id} 
                       onClick={() => setActiveProject(p)}
@@ -553,13 +1082,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, l
                       </div>
                     </div>
                   ))}
-                  
-                  {viewMode === 'guest' && projects.length === 0 && (
+                  {projects.length === 0 && (
                      <div className="col-span-3 py-12 text-center text-stone-300">
-                         <div className="mb-2 uppercase tracking-widest text-xs">No Public Projects</div>
+                         <div className="mb-2 uppercase tracking-widest text-xs">No Projects Found</div>
+                         {viewMode === 'guest' && <p className="text-[10px]">This user has not started any projects yet.</p>}
                      </div>
                   )}
-
                   {canEdit && (
                     <button 
                       onClick={() => setShowProjectModal(true)}
@@ -574,259 +1102,66 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, l
                 </div>
               </div>
             ) : (
-              <div className="fade-in-up">
-                <button 
-                  onClick={() => { setActiveProject(null); setIsDiaryExpanded(false); }}
-                  className="mb-8 flex items-center gap-3 text-stone-400 hover:text-stone-800 font-black text-xs uppercase tracking-[0.3em] transition-all group"
-                >
-                  <div className="p-2 bg-white rounded-lg border border-stone-100 group-hover:border-stone-800 transition-colors">
-                      <ArrowLeft size={16} /> 
-                  </div>
-                  {t.backToArchive}
-                </button>
-
-                <div className="bg-white rounded-[3rem] p-8 md:p-12 border border-stone-100 shadow-xl relative overflow-hidden">
-                    <div className="flex flex-col md:flex-row justify-between items-start gap-8 mb-12">
-                      <div className="flex-1">
-                          <div className="flex items-center gap-4 mb-2">
-                            <h3 className="text-3xl font-black uppercase tracking-tighter leading-none">{activeProject.name}</h3>
-                            <div className="h-2 w-2 rounded-full bg-blue-500"></div>
-                          </div>
-                          <p className="text-stone-400 font-medium text-lg italic max-w-2xl leading-relaxed">
-                            {activeProject.description}
-                          </p>
-                      </div>
-                    </div>
-
-                    {/* Diary Entry Area */}
-                    {canEdit && (
-                      <div className="mb-16">
-                        <div className="relative group">
-                            <textarea 
-                              value={diaryInput}
-                              onChange={(e) => setDiaryInput(e.target.value)}
-                              placeholder={t.writeDiary}
-                              className="w-full h-32 bg-stone-50 rounded-[2rem] p-6 outline-none focus:ring-[8px] ring-stone-100/40 transition-all font-medium text-lg border border-stone-100 shadow-inner resize-none placeholder:text-stone-300"
-                            />
-                            {/* Image Preview */}
-                            {diaryImage && (
-                                <div className="absolute bottom-20 left-6 h-12 w-12 rounded-lg overflow-hidden border-2 border-white shadow-md">
-                                    <img src={diaryImage} className="w-full h-full object-cover" />
-                                    <button 
-                                        onClick={() => setDiaryImage(null)} 
-                                        className="absolute inset-0 bg-black/50 opacity-0 hover:opacity-100 flex items-center justify-center transition-opacity"
-                                    >
-                                        <X size={12} className="text-white" />
-                                    </button>
-                                </div>
-                            )}
-
-                            <div className="absolute bottom-4 right-4 flex gap-2">
-                              <input type="file" hidden ref={diaryFileRef} accept="image/*" onChange={(e) => handleImageUpload(e, 'diary')} />
-                              <button 
-                                onClick={() => diaryFileRef.current?.click()}
-                                className={`p-3 rounded-xl shadow-sm border transition-all hover:scale-105 ${diaryImage ? 'bg-blue-50 border-blue-200 text-blue-500' : 'bg-white border-stone-100 text-stone-400 hover:text-stone-800'}`}
-                              >
-                                  <ImageIcon size={18} />
-                              </button>
-                              <button 
-                                onClick={handlePublishDiary}
-                                disabled={loading || (!diaryInput.trim() && !diaryImage)}
-                                className="px-6 bg-stone-900 text-white rounded-xl font-black text-[10px] uppercase tracking-[0.2em] flex items-center gap-2 hover:bg-black transition-all disabled:opacity-20 shadow-lg shadow-stone-200"
-                              >
-                                  {loading ? '...' : t.publish}
-                                  <Send size={14} />
-                              </button>
+                /* Diary View reused */
+                <div className="fade-in-up">
+                    <button onClick={() => { setActiveProject(null); setIsDiaryExpanded(false); }} className="mb-8 flex items-center gap-3 text-stone-400 hover:text-stone-800 font-black text-xs uppercase tracking-[0.3em] transition-all group">
+                        <div className="p-2 bg-white rounded-lg border border-stone-100 group-hover:border-stone-800 transition-colors"><ArrowLeft size={16} /></div>{t.backToArchive}
+                    </button>
+                    <div className="bg-white rounded-[3rem] p-8 md:p-12 border border-stone-100 shadow-xl relative overflow-hidden">
+                        <div className="flex flex-col md:flex-row justify-between items-start gap-8 mb-12">
+                            <div className="flex-1">
+                                <div className="flex items-center gap-4 mb-2"><h3 className="text-3xl font-black uppercase tracking-tighter leading-none">{activeProject.name}</h3><div className="h-2 w-2 rounded-full bg-blue-500"></div></div>
+                                <p className="text-stone-400 font-medium text-lg italic max-w-2xl leading-relaxed">{activeProject.description}</p>
                             </div>
                         </div>
-                      </div>
-                    )}
-
-                    {/* Timeline UI - WIDER AND FLATTER */}
-                    <div className="w-full space-y-4">
-                      <div className="flex items-center gap-6 mb-8 justify-center">
-                        <div className="h-px w-12 bg-stone-200" />
-                        <h4 className="text-[9px] font-black uppercase tracking-[0.5em] text-stone-300">Timeline</h4>
-                        <div className="h-px w-12 bg-stone-200" />
-                      </div>
-                      
-                      {activeProject.entries.length === 0 ? (
-                        <div className="py-12 text-center">
-                            <p className="text-stone-200 font-mono text-xs uppercase tracking-[0.3em] italic">Start your journey</p>
-                        </div>
-                      ) : (
-                        <>
-                          {visibleEntries.map((entry) => {
-                            const visibleComments = expandedComments[entry.id] ? entry.comments : entry.comments.slice(0, 2);
-                            return (
-                                <div key={entry.id} className="flex gap-4 group/entry w-full">
-                                    {/* Left: Date */}
-                                    <div className="w-16 text-right pt-2 shrink-0">
-                                        <span className="block text-xs font-black text-stone-800">{entry.date}</span>
-                                        <span className="block text-[10px] font-mono text-stone-400 mt-1">
-                                            {new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                        </span>
-                                    </div>
-
-                                    {/* Right: Content & Image bubble - Flat and Wide */}
-                                    <div className="flex-1 bg-stone-50 rounded-xl p-4 border border-stone-100 hover:border-stone-200 hover:bg-white hover:shadow-md transition-all relative">
-                                        <p className="text-sm text-stone-700 font-medium leading-relaxed whitespace-pre-wrap break-words">{entry.content}</p>
-                                        
-                                        {entry.images && entry.images.length > 0 && (
-                                            <div className="mt-3 flex justify-start">
-                                                <div 
-                                                    className="w-10 h-10 rounded-lg overflow-hidden border border-stone-200 cursor-zoom-in hover:scale-105 transition-transform relative group/img shadow-sm"
-                                                    onClick={() => setImagePreview(entry.images[0])}
-                                                >
-                                                    <img src={entry.images[0]} className="w-full h-full object-cover" />
-                                                    <div className="absolute inset-0 bg-black/10 group-hover/img:bg-transparent transition-colors" />
-                                                </div>
-                                            </div>
-                                        )}
-                                        
-                                        {/* Narrow Comment Section with Folding */}
-                                        <div className="mt-4 pt-3 border-t border-stone-100">
-                                            {entry.comments.length > 0 && (
-                                                <div className="space-y-1 mb-2">
-                                                    {visibleComments.map(c => (
-                                                        <div key={c.id} className="flex gap-2">
-                                                            <img src={c.avatar} className="w-4 h-4 rounded-full" />
-                                                            <div className="bg-white px-2 py-0.5 rounded-r-md rounded-bl-md border border-stone-100 text-[10px] text-stone-600 break-words flex-1">
-                                                                {c.content}
-                                                            </div>
-                                                        </div>
-                                                    ))}
-                                                    {entry.comments.length > 2 && (
-                                                        <button 
-                                                            onClick={() => toggleCommentExpansion(entry.id)}
-                                                            className="text-[9px] font-bold text-stone-400 hover:text-stone-800 ml-6 flex items-center gap-1 mt-1"
-                                                        >
-                                                            {expandedComments[entry.id] ? "Collapse" : `View ${entry.comments.length - 2} more`}
-                                                        </button>
-                                                    )}
-                                                </div>
-                                            )}
-
-                                            {/* Compact Input */}
-                                            <div className="flex items-center gap-2">
-                                                <div className="w-4 h-4 rounded-full bg-stone-200 shrink-0 overflow-hidden">
-                                                    {profile.avatar && <img src={profile.avatar} className="w-full h-full object-cover" />}
-                                                </div>
-                                                <div className="flex-1 relative">
-                                                    <input 
-                                                        value={commentInputs[entry.id] || ''}
-                                                        onChange={(e) => setCommentInputs({...commentInputs, [entry.id]: e.target.value})}
-                                                        placeholder={t.commentPlaceholder}
-                                                        className="w-full bg-transparent text-[10px] border-b border-stone-200 focus:border-stone-400 outline-none py-1 placeholder:text-stone-300"
-                                                        onKeyDown={(e) => e.key === 'Enter' && handlePostComment(entry.id)}
-                                                    />
-                                                    <button 
-                                                        onClick={() => handlePostComment(entry.id)}
-                                                        disabled={!commentInputs[entry.id]}
-                                                        className="absolute right-0 top-1/2 -translate-y-1/2 text-stone-300 hover:text-blue-500 disabled:opacity-0 transition-all"
-                                                    >
-                                                        <Send size={10} />
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        </div>
+                        {canEdit && (
+                            <div className="mb-16">
+                                <div className="relative group">
+                                    <textarea value={diaryInput} onChange={(e) => setDiaryInput(e.target.value)} placeholder={t.writeDiary} className="w-full h-32 bg-stone-50 rounded-[2rem] p-6 outline-none focus:ring-[8px] ring-stone-100/40 transition-all font-medium text-lg border border-stone-100 shadow-inner resize-none placeholder:text-stone-300" />
+                                    {diaryImage && <div className="absolute bottom-20 left-6 h-12 w-12 rounded-lg overflow-hidden border-2 border-white shadow-md"><img src={diaryImage} className="w-full h-full object-cover" /><button onClick={() => setDiaryImage(null)} className="absolute inset-0 bg-black/50 opacity-0 hover:opacity-100 flex items-center justify-center transition-opacity"><X size={12} className="text-white" /></button></div>}
+                                    <div className="absolute bottom-4 right-4 flex gap-2">
+                                        <input type="file" hidden ref={diaryFileRef} accept="image/*" onChange={(e) => handleImageUpload(e, 'diary')} />
+                                        <button onClick={() => diaryFileRef.current?.click()} className={`p-3 rounded-xl shadow-sm border transition-all hover:scale-105 ${diaryImage ? 'bg-blue-50 border-blue-200 text-blue-500' : 'bg-white border-stone-100 text-stone-400 hover:text-stone-800'}`}><ImageIcon size={18} /></button>
+                                        <button onClick={handlePublishDiary} disabled={loading || (!diaryInput.trim() && !diaryImage)} className="px-6 bg-stone-900 text-white rounded-xl font-black text-[10px] uppercase tracking-[0.2em] flex items-center gap-2 hover:bg-black transition-all disabled:opacity-20 shadow-lg shadow-stone-200">{loading ? '...' : t.publish} <Send size={14} /></button>
                                     </div>
                                 </div>
-                            );
-                          })}
-
-                          {/* Expand/Collapse Button */}
-                          {activeProject.entries.length > 5 && (
-                            <div className="flex justify-center pt-4">
-                                <button 
-                                    onClick={() => setIsDiaryExpanded(!isDiaryExpanded)}
-                                    className="flex items-center gap-2 px-4 py-2 rounded-full bg-white border border-stone-200 text-[10px] font-bold uppercase tracking-widest text-stone-500 hover:text-stone-800 hover:border-stone-400 transition-all shadow-sm"
-                                >
-                                    {isDiaryExpanded ? (
-                                        <>Collapse <ChevronUp size={12} /></>
-                                    ) : (
-                                        <>Expand History ({activeProject.entries.length - 5} More) <ChevronDown size={12} /></>
-                                    )}
-                                </button>
                             </div>
-                          )}
-                        </>
-                      )}
-                    </div>
-
-                    {/* Roadmap */}
-                    <div className="mt-16 pt-8 border-t border-stone-50">
-                      <h4 className="text-[9px] font-black uppercase tracking-[0.5em] text-stone-300 mb-6 text-center">Roadmap</h4>
-                      
-                      {/* Project Stats (4 Square Windows) */}
-                      {activeProject.stats && (
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-                             <div className="bg-white p-4 rounded-2xl border border-stone-100 shadow-sm flex flex-col items-center justify-center gap-2 group hover:border-blue-200 transition-colors">
-                                 <div className="flex items-center gap-2 text-stone-400">
-                                     <Target size={14} />
-                                     <span className="text-[9px] font-black uppercase tracking-widest">{t.stage || 'Stage'}</span>
-                                 </div>
-                                 {canEdit ? (
-                                     <input 
-                                        className="text-center font-black text-lg text-stone-800 w-full outline-none bg-transparent placeholder:text-stone-200"
-                                        placeholder="Idea"
-                                        value={activeProject.stats.stage}
-                                        onChange={(e) => handleUpdateProjectStats('stage', e.target.value)}
-                                     />
-                                 ) : (
-                                     <span className="font-black text-lg text-stone-800">{activeProject.stats.stage}</span>
-                                 )}
-                             </div>
-                             <div className="bg-white p-4 rounded-2xl border border-stone-100 shadow-sm flex flex-col items-center justify-center gap-2 group hover:border-orange-200 transition-colors">
-                                 <div className="flex items-center gap-2 text-stone-400">
-                                     <Hourglass size={14} />
-                                     <span className="text-[9px] font-black uppercase tracking-widest">{t.timeSpent || 'Time'}</span>
-                                 </div>
-                                 <span className="font-black text-lg text-stone-800">{projectTimeSpent}</span>
-                             </div>
-                             <div className="bg-white p-4 rounded-2xl border border-stone-100 shadow-sm flex flex-col items-center justify-center gap-2 group hover:border-rose-200 transition-colors">
-                                 <div className="flex items-center gap-2 text-stone-400">
-                                     <Coins size={14} />
-                                     <span className="text-[9px] font-black uppercase tracking-widest">{t.cost || 'Cost'}</span>
-                                 </div>
-                                 {canEdit ? (
-                                     <input 
-                                        className="text-center font-black text-lg text-stone-800 w-full outline-none bg-transparent placeholder:text-stone-200"
-                                        placeholder="$0"
-                                        value={activeProject.stats.cost}
-                                        onChange={(e) => handleUpdateProjectStats('cost', e.target.value)}
-                                     />
-                                 ) : (
-                                     <span className="font-black text-lg text-stone-800">{activeProject.stats.cost}</span>
-                                 )}
-                             </div>
-                             <div className="bg-white p-4 rounded-2xl border border-stone-100 shadow-sm flex flex-col items-center justify-center gap-2 group hover:border-emerald-200 transition-colors">
-                                 <div className="flex items-center gap-2 text-stone-400">
-                                     <Wallet size={14} />
-                                     <span className="text-[9px] font-black uppercase tracking-widest">{t.profit || 'Profit'}</span>
-                                 </div>
-                                 {canEdit ? (
-                                     <input 
-                                        className="text-center font-black text-lg text-stone-800 w-full outline-none bg-transparent placeholder:text-stone-200"
-                                        placeholder="$0"
-                                        value={activeProject.stats.profit}
-                                        onChange={(e) => handleUpdateProjectStats('profit', e.target.value)}
-                                     />
-                                 ) : (
-                                     <span className="font-black text-lg text-stone-800">{activeProject.stats.profit}</span>
-                                 )}
-                             </div>
-                          </div>
-                      )}
-
-                      <Roadmap entries={[...activeProject.entries].reverse()} lang={lang} onImageClick={setImagePreview} />
+                        )}
+                        <div className="w-full space-y-4">
+                            <div className="flex items-center gap-6 mb-8 justify-center"><div className="h-px w-12 bg-stone-200" /><h4 className="text-[9px] font-black uppercase tracking-[0.5em] text-stone-300">Timeline</h4><div className="h-px w-12 bg-stone-200" /></div>
+                            {activeProject.entries.length === 0 ? <div className="py-12 text-center"><p className="text-stone-200 font-mono text-xs uppercase tracking-[0.3em] italic">Start your journey</p></div> : 
+                                <>
+                                    {visibleEntries.map((entry) => {
+                                        const visibleComments = expandedComments[entry.id] ? entry.comments : entry.comments.slice(0, 2);
+                                        return (
+                                            <div key={entry.id} className="flex gap-4 group/entry w-full">
+                                                <div className="w-16 text-right pt-2 shrink-0"><span className="block text-xs font-black text-stone-800">{entry.date}</span><span className="block text-[10px] font-mono text-stone-400 mt-1">{new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></div>
+                                                <div className="flex-1 bg-stone-50 rounded-xl p-4 border border-stone-100 hover:border-stone-200 hover:bg-white hover:shadow-md transition-all relative">
+                                                    <p className="text-sm text-stone-700 font-medium leading-relaxed whitespace-pre-wrap break-words">{entry.content}</p>
+                                                    {entry.images && entry.images.length > 0 && <div className="mt-3 flex justify-start"><div className="w-10 h-10 rounded-lg overflow-hidden border border-stone-200 cursor-zoom-in hover:scale-105 transition-transform relative group/img shadow-sm" onClick={() => setImagePreview(entry.images[0])}><img src={entry.images[0]} className="w-full h-full object-cover" /><div className="absolute inset-0 bg-black/10 group-hover/img:bg-transparent transition-colors" /></div></div>}
+                                                    <div className="mt-4 pt-3 border-t border-stone-100">
+                                                        {entry.comments.length > 0 && <div className="space-y-1 mb-2">{visibleComments.map(c => <div key={c.id} className="flex gap-2"><img src={c.avatar} className="w-4 h-4 rounded-full" /><div className="bg-white px-2 py-0.5 rounded-r-md rounded-bl-md border border-stone-100 text-[10px] text-stone-600 break-words flex-1">{c.content}</div></div>)}{entry.comments.length > 2 && <button onClick={() => toggleCommentExpansion(entry.id)} className="text-[9px] font-bold text-stone-400 hover:text-stone-800 ml-6 flex items-center gap-1 mt-1">{expandedComments[entry.id] ? "Collapse" : `View ${entry.comments.length - 2} more`}</button>}</div>}
+                                                        <div className="flex items-center gap-2"><div className="w-4 h-4 rounded-full bg-stone-200 shrink-0 overflow-hidden">{profile.avatar && <img src={profile.avatar} className="w-full h-full object-cover" />}</div><div className="flex-1 relative"><input value={commentInputs[entry.id] || ''} onChange={(e) => setCommentInputs({...commentInputs, [entry.id]: e.target.value})} placeholder={t.commentPlaceholder} className="w-full bg-transparent text-[10px] border-b border-stone-200 focus:border-stone-400 outline-none py-1 placeholder:text-stone-300" onKeyDown={(e) => e.key === 'Enter' && handlePostComment(entry.id)} /><button onClick={() => handlePostComment(entry.id)} disabled={!commentInputs[entry.id]} className="absolute right-0 top-1/2 -translate-y-1/2 text-stone-300 hover:text-blue-500 disabled:opacity-0 transition-all"><Send size={10} /></button></div></div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                    {activeProject.entries.length > 5 && <div className="flex justify-center pt-4"><button onClick={() => setIsDiaryExpanded(!isDiaryExpanded)} className="flex items-center gap-2 px-4 py-2 rounded-full bg-white border border-stone-200 text-[10px] font-bold uppercase tracking-widest text-stone-500 hover:text-stone-800 hover:border-stone-400 transition-all shadow-sm">{isDiaryExpanded ? <>Collapse <ChevronUp size={12} /></> : <>Expand History ({activeProject.entries.length - 5} More) <ChevronDown size={12} /></>}</button></div>}
+                                </>
+                            }
+                        </div>
+                        <div className="mt-16 pt-8 border-t border-stone-50">
+                            <h4 className="text-[9px] font-black uppercase tracking-[0.5em] text-stone-300 mb-6 text-center">Roadmap</h4>
+                            {activeProject.stats && <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8"><div className="bg-white p-4 rounded-2xl border border-stone-100 shadow-sm flex flex-col items-center justify-center gap-2 group hover:border-blue-200 transition-colors"><div className="flex items-center gap-2 text-stone-400"><Target size={14} /><span className="text-[9px] font-black uppercase tracking-widest">{t.stage || 'Stage'}</span></div>{canEdit ? <input className="text-center font-black text-lg text-stone-800 w-full outline-none bg-transparent placeholder:text-stone-200" placeholder="Idea" value={activeProject.stats.stage} onChange={(e) => handleUpdateProjectStats('stage', e.target.value)} /> : <span className="font-black text-lg text-stone-800">{activeProject.stats.stage}</span>}</div><div className="bg-white p-4 rounded-2xl border border-stone-100 shadow-sm flex flex-col items-center justify-center gap-2 group hover:border-orange-200 transition-colors"><div className="flex items-center gap-2 text-stone-400"><Hourglass size={14} /><span className="text-[9px] font-black uppercase tracking-widest">{t.timeSpent || 'Time'}</span></div><span className="font-black text-lg text-stone-800">{projectTimeSpent}</span></div><div className="bg-white p-4 rounded-2xl border border-stone-100 shadow-sm flex flex-col items-center justify-center gap-2 group hover:border-rose-200 transition-colors"><div className="flex items-center gap-2 text-stone-400"><Coins size={14} /><span className="text-[9px] font-black uppercase tracking-widest">{t.cost || 'Cost'}</span></div>{canEdit ? <input className="text-center font-black text-lg text-stone-800 w-full outline-none bg-transparent placeholder:text-stone-200" placeholder="$0" value={activeProject.stats.cost} onChange={(e) => handleUpdateProjectStats('cost', e.target.value)} /> : <span className="font-black text-lg text-stone-800">{activeProject.stats.cost}</span>}</div><div className="bg-white p-4 rounded-2xl border border-stone-100 shadow-sm flex flex-col items-center justify-center gap-2 group hover:border-emerald-200 transition-colors"><div className="flex items-center gap-2 text-stone-400"><Wallet size={14} /><span className="text-[9px] font-black uppercase tracking-widest">{t.profit || 'Profit'}</span></div>{canEdit ? <input className="text-center font-black text-lg text-stone-800 w-full outline-none bg-transparent placeholder:text-stone-200" placeholder="$0" value={activeProject.stats.profit} onChange={(e) => handleUpdateProjectStats('profit', e.target.value)} /> : <span className="font-black text-lg text-stone-800">{activeProject.stats.profit}</span>}</div></div>}
+                            <Roadmap entries={[...activeProject.entries].reverse()} lang={lang} onImageClick={setImagePreview} />
+                        </div>
                     </div>
                 </div>
-              </div>
             )}
           </>
         )}
-
+        
         {/* Footer */}
         <div className="mt-24 pb-12 flex flex-col items-center gap-4">
           <div className="flex items-center gap-3 bg-white px-5 py-2 rounded-full border border-stone-100 shadow-sm">
@@ -838,176 +1173,220 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile: initialProfile, l
           <p className="text-stone-200 font-mono text-[8px] uppercase tracking-[0.5em]">OPC ENGINE V1.4</p>
         </div>
 
-        {/* CREATE PROJECT MODAL */}
+        {/* --- MODALS --- */}
         {showProjectModal && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
                 <div className="bg-white rounded-[2.5rem] p-10 max-w-md w-full shadow-2xl relative">
-                    <button 
-                        onClick={() => setShowProjectModal(false)}
-                        className="absolute top-6 right-6 p-2 rounded-full bg-stone-50 text-stone-400 hover:bg-stone-100 hover:text-stone-800 transition-colors"
-                    >
-                        <X size={20} />
-                    </button>
-                    
+                    <button onClick={() => setShowProjectModal(false)} className="absolute top-6 right-6 p-2 rounded-full bg-stone-50 text-stone-400 hover:bg-stone-100 hover:text-stone-800 transition-colors"><X size={20} /></button>
                     <div className="mb-8">
-                        <div className="w-12 h-12 rounded-xl bg-stone-900 text-white flex items-center justify-center mb-4 shadow-lg">
-                            <Plus size={24} />
-                        </div>
+                        <div className="w-12 h-12 rounded-xl bg-stone-900 text-white flex items-center justify-center mb-4 shadow-lg"><Plus size={24} /></div>
                         <h2 className="text-2xl font-black uppercase tracking-tight text-stone-800">Ignite New Project</h2>
                         <p className="text-stone-400 font-medium italic mt-2">Define the legacy you want to build.</p>
                     </div>
-
                     <div className="space-y-6">
                         <div>
                             <label className="block text-[10px] font-black uppercase tracking-widest text-stone-300 mb-2">Project Name</label>
-                            <input 
-                                autoFocus
-                                value={newProjectForm.name}
-                                onChange={(e) => setNewProjectForm({...newProjectForm, name: e.target.value})}
-                                placeholder="e.g. Project Titan"
-                                className="w-full bg-stone-50 border-b-2 border-stone-200 focus:border-stone-800 outline-none py-3 px-2 text-xl font-bold transition-colors"
-                            />
+                            <input autoFocus value={newProjectForm.name} onChange={(e) => setNewProjectForm({...newProjectForm, name: e.target.value})} placeholder="e.g. Project Titan" className="w-full bg-stone-50 border-b-2 border-stone-200 focus:border-stone-800 outline-none py-3 px-2 text-xl font-bold transition-colors" />
                         </div>
                         <div>
                             <label className="block text-[10px] font-black uppercase tracking-widest text-stone-300 mb-2">Vision & Intro</label>
-                            <textarea 
-                                value={newProjectForm.description}
-                                onChange={(e) => setNewProjectForm({...newProjectForm, description: e.target.value})}
-                                placeholder="What problem are you solving?"
-                                className="w-full bg-stone-50 border border-stone-200 rounded-xl p-4 text-sm font-medium focus:border-stone-800 outline-none resize-none h-32 transition-colors"
-                            />
+                            <textarea value={newProjectForm.description} onChange={(e) => setNewProjectForm({...newProjectForm, description: e.target.value})} placeholder="What problem are you solving?" className="w-full bg-stone-50 border border-stone-200 rounded-xl p-4 text-sm font-medium focus:border-stone-800 outline-none resize-none h-32 transition-colors" />
                         </div>
-                        <button 
-                            onClick={handleCreateProject}
-                            disabled={!newProjectForm.name.trim()}
-                            className="w-full bg-stone-900 text-white py-4 rounded-xl font-black uppercase tracking-[0.2em] hover:bg-black transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-xl shadow-stone-200"
-                        >
-                            Initialize Project
-                        </button>
+                        <button onClick={handleCreateProject} disabled={!newProjectForm.name.trim()} className="w-full bg-stone-900 text-white py-4 rounded-xl font-black uppercase tracking-[0.2em] hover:bg-black transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-xl shadow-stone-200">Initialize Project</button>
                     </div>
                 </div>
             </div>
         )}
-
-        {/* SOCIAL NETWORK MODAL (Centralized, Independent Window) */}
+        
+        {/* NEW FRIENDS MODAL (No Clans) */}
         {showNetworkModal && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/60 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95 duration-200">
                 <div className="bg-white rounded-[2.5rem] p-8 max-w-lg w-full shadow-2xl relative flex flex-col max-h-[80vh] min-h-[500px]">
                      <div className="flex items-center justify-between mb-6">
                         <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-xl bg-stone-900 text-white flex items-center justify-center shadow-md">
-                                <Users size={20} />
-                            </div>
+                            <div className="w-10 h-10 rounded-xl bg-stone-900 text-white flex items-center justify-center shadow-md"><Users size={20} /></div>
                             <div>
-                                <h3 className="text-xl font-black uppercase tracking-tight text-stone-800">
-                                    {socialTab === 'groups' ? 'Your Clans' : 'Your Friends'}
-                                </h3>
-                                <p className="text-xs text-stone-400 font-mono uppercase tracking-widest">Manage your network</p>
+                                <h3 className="text-xl font-black uppercase tracking-tight text-stone-800">Find Friends</h3>
+                                <p className="text-xs text-stone-400 font-mono uppercase tracking-widest">Grow your network</p>
                             </div>
                         </div>
-                        <button 
-                            onClick={() => setShowNetworkModal(false)}
-                            className="p-2 rounded-full bg-stone-50 text-stone-400 hover:bg-stone-100 hover:text-stone-800 transition-colors"
-                        >
-                            <X size={20} />
-                        </button>
+                        <button onClick={() => setShowNetworkModal(false)} className="p-2 rounded-full bg-stone-50 text-stone-400 hover:bg-stone-100 hover:text-stone-800 transition-colors"><X size={20} /></button>
                      </div>
-
-                     {/* Search in Modal */}
                      <div className="relative mb-6">
                         <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-stone-400" size={16} />
-                        <input 
-                            autoFocus
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            placeholder={t.searchPlaceholder}
-                            className="w-full bg-stone-50 border border-stone-100 rounded-2xl py-4 pl-12 pr-4 text-sm font-medium outline-none focus:border-stone-800 transition-colors placeholder:text-stone-300"
-                        />
+                        <input autoFocus value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search for founders..." className="w-full bg-stone-50 border border-stone-100 rounded-2xl py-4 pl-12 pr-4 text-sm font-medium outline-none focus:border-stone-800 transition-colors placeholder:text-stone-300" />
                      </div>
-
-                     {/* List in Modal */}
                      <div className="overflow-y-auto pr-2 flex-1 space-y-3">
-                        {filteredSocials.filter(g => (socialTab === 'groups' ? g.type === 'group' : g.type === 'user')).map(item => (
-                            <div 
-                                key={item.id} 
-                                onClick={() => handleVisit(item)}
-                                className="p-4 rounded-2xl border border-stone-100 hover:border-stone-800 hover:bg-stone-50 transition-all cursor-pointer group flex items-center gap-4"
-                            >
-                                <div className="w-12 h-12 rounded-full overflow-hidden shrink-0 shadow-sm" style={{ backgroundColor: item.avatar.startsWith('#') ? item.avatar : undefined }}>
-                                    {!item.avatar.startsWith('#') && <img src={item.avatar} className="w-full h-full object-cover" />}
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                    <div className="flex items-center gap-2 mb-1">
-                                        <h4 className="font-bold text-stone-800 text-sm truncate">{item.name}</h4>
-                                        <span className={`text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md ${item.type === 'group' ? 'bg-blue-50 text-blue-500' : 'bg-emerald-50 text-emerald-500'}`}>
-                                            {item.type === 'group' ? (lang === 'en' ? 'Clan' : '圈子') : (lang === 'en' ? 'User' : '用户')}
-                                        </span>
+                        {allPotentialFriends.length > 0 ? (
+                            allPotentialFriends.map(user => {
+                                const name = 'name' in user ? user.name : user.companyName;
+                                const desc = 'description' in user ? user.description : 'Building something cool';
+                                const avatar = 'avatar' in user ? user.avatar : null;
+                                const isMock = 'type' in user; // Mock users don't have UserProfile structure exactly
+                                const status = getRelationStatus(name);
+
+                                return (
+                                    <div key={name} onClick={() => isMock ? handleVisitGroup(user as Group) : handleVisitUser(user as UserProfile)} className="p-4 rounded-2xl border border-stone-100 hover:border-stone-800 hover:bg-stone-50 transition-all cursor-pointer group flex items-center gap-4">
+                                        <div className="w-12 h-12 rounded-full overflow-hidden shrink-0 shadow-sm bg-stone-100 flex items-center justify-center font-bold text-stone-400">
+                                            {avatar && !avatar.startsWith('#') ? <img src={avatar} className="w-full h-full object-cover" /> : name[0]}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex items-center gap-2 mb-1">
+                                                <h4 className="font-bold text-stone-800 text-sm truncate">{name}</h4>
+                                                {status === 'friend' && <span className="text-[9px] font-black uppercase bg-emerald-100 text-emerald-600 px-2 py-0.5 rounded-md">Friend</span>}
+                                            </div>
+                                            <p className="text-xs text-stone-400 truncate">{desc}</p>
+                                        </div>
+                                        <button 
+                                            onClick={(e) => handleFollowToggle(e, name, isMock)} 
+                                            className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider border transition-all ${
+                                                status === 'friend' || status === 'requested'
+                                                ? 'bg-stone-900 text-white border-stone-900' 
+                                                : 'bg-white text-stone-500 border-stone-200 hover:border-stone-800 hover:text-stone-800'
+                                            }`}
+                                        >
+                                            {status === 'friend' ? 'Connected' : (status === 'requested' ? 'Requested' : (status === 'follower' ? 'Follow Back' : 'Connect'))}
+                                        </button>
                                     </div>
-                                    <p className="text-xs text-stone-400 truncate">{item.description}</p>
-                                </div>
-                                {item.type === 'group' ? (
-                                    <button 
-                                        onClick={(e) => handleJoinToggle(e, item.id)}
-                                        className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider border transition-all ${
-                                            joinedGroups.includes(item.id) 
-                                            ? 'bg-stone-900 text-white border-stone-900' 
-                                            : 'bg-white text-stone-500 border-stone-200 hover:border-stone-800 hover:text-stone-800'
-                                        }`}
-                                    >
-                                        {joinedGroups.includes(item.id) ? (lang === 'en' ? 'Joined' : '已加入') : t.join}
-                                    </button>
-                                ) : (
-                                    <button 
-                                        onClick={(e) => handleFriendToggle(e, item.id)}
-                                        className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider border transition-all ${
-                                            addedFriends.includes(item.id) 
-                                            ? 'bg-stone-900 text-white border-stone-900' 
-                                            : 'bg-white text-stone-500 border-stone-200 hover:border-stone-800 hover:text-stone-800'
-                                        }`}
-                                    >
-                                         {addedFriends.includes(item.id) ? t.added : t.add}
-                                    </button>
-                                )}
-                            </div>
-                        ))}
-                        {filteredSocials.filter(g => (socialTab === 'groups' ? g.type === 'group' : g.type === 'user')).length === 0 && (
-                            <div className="py-12 text-center text-stone-300">
-                                <Users size={48} className="mx-auto mb-4 opacity-20" />
-                                <p className="text-xs font-mono uppercase tracking-widest">No connections found</p>
-                            </div>
+                                )
+                            })
+                        ) : (
+                            <div className="py-12 text-center text-stone-300"><Users size={48} className="mx-auto mb-4 opacity-20" /><p className="text-xs font-mono uppercase tracking-widest">No users found</p></div>
                         )}
                      </div>
                 </div>
             </div>
         )}
 
-        {/* INFO POPUP MODAL (Fixed Text Overflow) */}
-        {infoPopup && (
-            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/20 backdrop-blur-[2px] p-8" onClick={() => setInfoPopup(null)}>
-                <div className="bg-white p-8 rounded-3xl max-w-lg w-full shadow-2xl animate-in zoom-in-95 duration-200 relative overflow-hidden flex flex-col max-h-[80vh]" onClick={(e) => e.stopPropagation()}>
-                    <button onClick={() => setInfoPopup(null)} className="absolute top-6 right-6 text-stone-300 hover:text-stone-800 transition-colors">
-                        <X size={20} />
-                    </button>
-                    <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
-                        <h3 className="text-xs font-black uppercase tracking-widest text-stone-400 mb-6 sticky top-0 bg-white pb-2">{infoPopup.label}</h3>
-                        <p className="text-xl font-bold text-stone-800 leading-relaxed whitespace-pre-wrap break-words">
-                            {infoPopup.value}
-                        </p>
+        {/* OPC LETTER MODAL (Updated Logic) */}
+        {showLetterModal && (
+            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                <div className="bg-white w-full max-w-md h-[600px] rounded-[2.5rem] flex flex-col relative border border-stone-200 shadow-2xl overflow-hidden">
+                    <div className="p-5 border-b border-stone-100 flex justify-between items-center bg-white z-10 shrink-0">
+                        <div className="flex items-center gap-3">
+                             {letterView === 'chat' && (
+                                <button onClick={() => setLetterView('inbox')} className="p-2 -ml-2 rounded-full hover:bg-stone-100 transition-colors"><ArrowLeft size={16} /></button>
+                             )}
+                             <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold shadow-sm ${letterView === 'inbox' ? 'bg-stone-800' : (activeChatPartner?.isSupervisor ? 'bg-rose-500' : 'bg-blue-500')}`}>
+                                {letterView === 'inbox' ? <Scroll size={20} /> : (activeChatPartner?.isSupervisor ? <Zap size={20} /> : <MessageCircle size={20} />)}
+                             </div>
+                             <div>
+                                <h3 className={`font-black text-sm uppercase tracking-wide ${activeChatPartner?.isSupervisor ? 'text-rose-600' : 'text-stone-800'}`}>
+                                    {letterView === 'inbox' ? 'OPC Mailbox' : activeChatPartner?.name}
+                                </h3>
+                                <p className="text-stone-400 text-[10px] font-mono">{letterView === 'inbox' ? 'Encrypted Channel' : 'Secure Connection'}</p>
+                             </div>
+                        </div>
+                        <button onClick={() => setShowLetterModal(false)} className="text-stone-400 hover:text-stone-800 p-2"><X size={20} /></button>
                     </div>
+
+                    {letterView === 'inbox' ? (
+                        <div className="flex-1 flex flex-col overflow-hidden bg-stone-50">
+                            <div className="p-4 border-b border-stone-100 bg-white">
+                                <div className="relative">
+                                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" size={14} />
+                                    <input 
+                                        value={letterSearchQuery}
+                                        onChange={(e) => setLetterSearchQuery(e.target.value)}
+                                        placeholder="Find friend..."
+                                        className="w-full bg-stone-50 border border-stone-100 rounded-xl py-3 pl-10 pr-4 text-xs font-bold outline-none focus:border-stone-300 transition-colors"
+                                    />
+                                </div>
+                            </div>
+                            <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
+                                <div 
+                                    onClick={() => openChatWith('Supervisor', true)}
+                                    className="p-4 bg-white border border-rose-100 rounded-2xl shadow-sm flex items-center gap-4 cursor-pointer hover:border-rose-300 transition-all group relative"
+                                >
+                                    <div className="w-10 h-10 rounded-full bg-rose-50 flex items-center justify-center text-rose-500 font-bold shrink-0 border border-rose-100"><Zap size={18} /></div>
+                                    <div className="flex-1 min-w-0">
+                                        <div className="flex justify-between items-center mb-1">
+                                            <h4 className="font-black text-rose-600 text-xs uppercase tracking-wider">Supervisor</h4>
+                                            {hasUnreadSupervisorMsg && <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span>}
+                                        </div>
+                                        <p className="text-[10px] text-stone-400 font-mono truncate">Official Direct Line</p>
+                                    </div>
+                                    <Crown size={14} className="text-rose-200 absolute top-2 right-2 rotate-12" />
+                                </div>
+
+                                {searchedFriends.length > 0 ? (
+                                    searchedFriends.map(friend => (
+                                        <div 
+                                            key={friend.companyName}
+                                            onClick={() => openChatWith(friend.companyName, false)}
+                                            className="p-3 bg-white border border-stone-100 rounded-2xl shadow-sm flex items-center gap-4 cursor-pointer hover:border-blue-200 transition-all"
+                                        >
+                                            <div className="w-10 h-10 rounded-full bg-stone-100 overflow-hidden shrink-0 border border-stone-100">
+                                                {friend.avatar ? <img src={friend.avatar} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-stone-400 font-bold">{friend.companyName[0]}</div>}
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <div className="flex justify-between items-center mb-1">
+                                                    <h4 className="font-bold text-stone-800 text-xs truncate mb-0.5">{friend.companyName}</h4>
+                                                    {unreadPartners.has(friend.companyName) && <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>}
+                                                </div>
+                                                <p className="text-[10px] text-stone-400 truncate">{friend.title || 'Founder'}</p>
+                                            </div>
+                                            <ArrowRight size={14} className="text-stone-300" />
+                                        </div>
+                                    ))
+                                ) : (
+                                    <div className="text-center py-8 opacity-40">
+                                        <Users size={24} className="mx-auto mb-2 text-stone-400" />
+                                        <p className="text-stone-400 text-[10px] uppercase tracking-widest">{letterSearchQuery ? 'No friend found' : 'Add friends to write letters'}</p>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    ) : (
+                        <>
+                            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-stone-50 custom-scrollbar">
+                                {letterMessages.length === 0 && <div className="text-center py-8 opacity-40"><Scroll size={32} className="mx-auto mb-2 text-stone-400" /><p className="text-stone-400 text-xs font-mono uppercase">Start writing...</p></div>}
+                                {letterMessages.map(msg => {
+                                    const isMe = msg.sender === 'user' || msg.sender === profile.companyName; 
+                                    const isSupMsg = msg.sender === 'supervisor';
+                                    return (
+                                        <div key={msg.id} className={`flex w-full ${isMe ? 'justify-end' : 'justify-start'}`}>
+                                            <div className={`max-w-[80%] p-3 rounded-2xl text-xs font-medium leading-relaxed shadow-sm ${isMe ? 'bg-stone-800 text-white rounded-br-none' : (isSupMsg ? 'bg-rose-50 border border-rose-100 text-rose-800 rounded-bl-none' : 'bg-white text-stone-800 border border-stone-200 rounded-bl-none')}`}>
+                                                <p>{msg.content}</p>
+                                                <span className={`block text-[8px] mt-1 text-right font-mono ${isMe ? 'opacity-50' : 'opacity-40'}`}>{new Date(msg.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                                <div ref={chatBottomRef} />
+                            </div>
+                            <div className="p-4 bg-white border-t border-stone-100 shrink-0">
+                                <div className="flex gap-2">
+                                    <input autoFocus value={letterInput} onChange={(e) => setLetterInput(e.target.value)} placeholder={`Message ${activeChatPartner?.name}...`} className="flex-1 bg-stone-50 text-stone-800 text-xs p-3 rounded-xl outline-none focus:ring-1 focus:ring-stone-400 border border-transparent placeholder:text-stone-400 transition-all" onKeyDown={(e) => e.key === 'Enter' && handleSendLetter()} />
+                                    <button onClick={handleSendLetter} disabled={!letterInput.trim()} className={`p-3 rounded-xl text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${activeChatPartner?.isSupervisor ? 'bg-rose-500 hover:bg-rose-600' : 'bg-stone-900 hover:bg-stone-800'}`}><Send size={16} /></button>
+                                </div>
+                            </div>
+                        </>
+                    )}
                 </div>
             </div>
         )}
 
-        {/* IMAGE LIGHTBOX */}
+        {/* INFO POPUP & LIGHTBOX */}
+        {infoPopup && (
+            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/20 backdrop-blur-[2px] p-8" onClick={() => setInfoPopup(null)}>
+                <div className="bg-white p-8 rounded-3xl max-w-lg w-full shadow-2xl animate-in zoom-in-95 duration-200 relative overflow-hidden flex flex-col max-h-[80vh]" onClick={(e) => e.stopPropagation()}>
+                    <button onClick={() => setInfoPopup(null)} className="absolute top-6 right-6 text-stone-300 hover:text-stone-800 transition-colors"><X size={20} /></button>
+                    <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
+                        <h3 className="text-xs font-black uppercase tracking-widest text-stone-400 mb-6 sticky top-0 bg-white pb-2">{infoPopup.label}</h3>
+                        <p className="text-xl font-bold text-stone-800 leading-relaxed whitespace-pre-wrap break-words">{infoPopup.value}</p>
+                    </div>
+                </div>
+            </div>
+        )}
         {imagePreview && (
             <div className="fixed inset-0 z-[70] bg-black/90 backdrop-blur-md flex items-center justify-center p-4 md:p-10 animate-in fade-in duration-200" onClick={() => setImagePreview(null)}>
-                <button className="absolute top-6 right-6 text-white/50 hover:text-white transition-colors">
-                    <X size={32} />
-                </button>
+                <button className="absolute top-6 right-6 text-white/50 hover:text-white transition-colors"><X size={32} /></button>
                 <img src={imagePreview} className="max-w-full max-h-full rounded-lg shadow-2xl" onClick={(e) => e.stopPropagation()} />
             </div>
         )}
       </div>
+      <style>{`@keyframes slideDown { from { transform: translateY(-100%); } to { transform: translateY(0); } }`}</style>
     </div>
   );
 };
