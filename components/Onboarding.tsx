@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { UserProfile, Message, Language } from '../types';
 import { ONBOARDING_STEPS_BASE } from '../constants';
@@ -20,7 +21,8 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete, lang }) => {
     audience: '',
     valuation: '',
     avatar: null,
-    password: ''
+    password: '',
+    title: 'Solo Founder'
   });
   const [inputValue, setInputValue] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
@@ -64,9 +66,11 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete, lang }) => {
     setMessages(prev => [...prev, { sender: 'USER', text, id: Date.now().toString() }]);
   };
 
-  const nextStep = (index: number) => {
+  const nextStep = (index: number, updatedProfile?: UserProfile) => {
     if (index >= steps.length) {
-      setTimeout(() => onComplete(profile), 1500);
+      // Use the updated profile passed from handleTextSubmit, or the current state as fallback
+      const finalProfile = updatedProfile || profile;
+      setTimeout(() => onComplete(finalProfile), 1500);
       return;
     }
     setStepIndex(index);
@@ -78,7 +82,11 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete, lang }) => {
     if (!inputValue.trim() && steps[stepIndex].type !== 'file') return;
 
     const currentStep = steps[stepIndex];
-    setProfile(prev => ({ ...prev, [currentStep.field]: inputValue }));
+    
+    // Create new profile object immediately to ensure it's passed correctly to completion
+    const newProfile = { ...profile, [currentStep.field]: inputValue };
+    setProfile(newProfile);
+
     const displayValue = currentStep.type === 'password' ? '•'.repeat(inputValue.length) : inputValue;
     addUserMessage(displayValue);
     setInputValue('');
@@ -86,7 +94,9 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete, lang }) => {
     if (currentStep.reaction) {
       await addRioMessage(currentStep.reaction, 600);
     }
-    nextStep(stepIndex + 1);
+    
+    // Pass the new profile to nextStep so it has the latest data if it finishes
+    nextStep(stepIndex + 1, newProfile);
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -95,10 +105,12 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete, lang }) => {
       const reader = new FileReader();
       reader.onloadend = async () => {
         const result = reader.result as string;
-        setProfile(prev => ({ ...prev, avatar: result }));
+        const newProfile = { ...profile, avatar: result };
+        setProfile(newProfile);
+        
         addUserMessage(<img src={result} alt="Upload" className="w-16 h-16 rounded-full border-2 border-white shadow-sm object-cover" />);
         if (steps[stepIndex].reaction) await addRioMessage(steps[stepIndex].reaction, 800);
-        nextStep(stepIndex + 1);
+        nextStep(stepIndex + 1, newProfile);
       };
       reader.readAsDataURL(file);
     }

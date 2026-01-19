@@ -1,3 +1,4 @@
+
 import React, { useRef, useState, useEffect } from 'react';
 import { DiaryEntry, Language } from '../types';
 import { TRANSLATIONS } from '../translations';
@@ -109,13 +110,14 @@ export const Roadmap: React.FC<RoadmapProps> = ({ entries, lang, onImageClick })
               }}
             >
               <div 
-                className={`w-12 h-12 rounded-full border-4 shadow-md flex items-center justify-center transition-all duration-300 z-10 hover:scale-110
-                    ${selectedEntry === entry.id ? 'scale-125 border-rose-500 bg-rose-50' : 'border-white bg-stone-200'}
+                className={`w-12 h-12 rounded-full border-4 shadow-md flex items-center justify-center transition-all duration-300 z-10 hover:scale-110 overflow-hidden bg-cover bg-center
+                    ${selectedEntry === entry.id ? 'scale-125 border-rose-500' : 'border-white bg-stone-200'}
                 `}
+                style={{
+                    backgroundImage: entry.images.length > 0 ? `url(${entry.images[0]})` : undefined
+                }}
               >
-                 {entry.images.length > 0 ? (
-                     <ImageIcon size={20} className={selectedEntry === entry.id ? 'text-rose-500' : 'text-stone-500'} />
-                 ) : (
+                 {entry.images.length === 0 && (
                      <MapPin size={20} className={selectedEntry === entry.id ? 'text-rose-500' : 'text-stone-500'} />
                  )}
               </div>
@@ -145,7 +147,7 @@ export const Roadmap: React.FC<RoadmapProps> = ({ entries, lang, onImageClick })
                      </span>
                      {entry.images.length > 0 && (
                          <div 
-                            className="mt-2 rounded-lg overflow-hidden h-24 w-full border border-stone-100 cursor-zoom-in"
+                            className="mt-2 rounded-lg overflow-hidden h-24 w-full border border-stone-100 cursor-zoom-in hover:opacity-90 transition-opacity"
                             onClick={() => onImageClick(entry.images[0])}
                          >
                              <img src={entry.images[0]} alt="Ref" className="w-full h-full object-cover" />

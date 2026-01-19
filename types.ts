@@ -13,6 +13,7 @@ export interface UserProfile {
   projectUrl?: string; // Link to the user's project
   projectCover?: string | null; // Background image for the visit button
   password: string;
+  title?: string; // Editable user title (e.g. Solo Founder)
 }
 
 export interface ChatStep {
@@ -47,10 +48,18 @@ export interface DiaryEntry {
   comments: Comment[];
 }
 
+export interface ProjectStats {
+  stage: string;
+  timeSpent: string;
+  cost: string;
+  profit: string;
+}
+
 export interface Project {
   id: string;
   name: string;
   description: string;
+  stats?: ProjectStats; // Added stats
   entries: DiaryEntry[];
 }
 
@@ -60,4 +69,32 @@ export interface Group {
   avatar: string; // Color or Image URL
   description: string;
   type: 'group' | 'user';
+}
+
+export interface ForumComment {
+  id: string;
+  author: {
+    name: string;
+    avatar: string;
+  };
+  content: string;
+  timestamp: number;
+}
+
+export interface ForumPost {
+  id: string;
+  author: {
+    name: string;
+    avatar: string;
+    title: string;
+  };
+  content: string;
+  image?: string | null; // Added image
+  link?: string | null; // Added link
+  timestamp: number;
+  likes: number;
+  likedByMe?: boolean;
+  comments: number;
+  commentsList?: ForumComment[];
+  tags: string[];
 }
